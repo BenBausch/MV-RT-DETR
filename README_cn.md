@@ -24,10 +24,8 @@
 
 ## 代码仓库
 - 🔥 RT-DETRv2
-  - paddle: [code&weight](./rtdetrv2_paddle/)
   - pytorch: [code&weight](./rtdetrv2_pytorch/)
 - 🔥 RT-DETR 
-  - paddle: [code&weight](./rtdetr_paddle)
   - pytorch: [code&weight](./rtdetr_pytorch)
 
 

@@ -1,0 +1,94 @@
+__include__: [
+  '../dataset/ortho_detection_binary.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# Binary tooth/no-tooth, IMPROVED recipe (vs rtdetrv2_r50vd_ortho_binary.yml):
+#   (1) fine-tune the FULL COCO-pretrained RT-DETRv2-R50 (backbone+encoder+decoder),
+#       not just the ImageNet backbone.
+#   (2) higher input resolution: 1024 (was 640).
+#   (3) Ultralytics-style augmentation: mosaic + horizontal flip + photometric,
+#       with mosaic/heavy aug closed for the last 10 epochs.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_binary_v2
+
+checkpoint_freq: 10
+
+# (1) Full pretrained detector. The tuning loader matches weights by name+shape,
+#     so the 1-class head and the 1024-resolution anchor buffer are skipped and
+#     re-initialized while backbone/encoder/decoder load from COCO.
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+# (2) Higher resolution. eval_spatial_size MUST equal the val input size, else the
+#     precomputed eval anchors won't line up with the feature maps.
+eval_spatial_size: [1024, 1024]
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: r50vd_ortho_binary_v2
+  mode: online
+  tags: [r50vd, ortho, tooth-no-tooth, 1cls, pretrained-ft, res1024, mosaic]
+
+
+# ---- schedule (small dataset, ~45 iters/epoch at bs=8) ----
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+
+ema:
+  warmups: 100
+
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+# (3) Ultralytics-style augmentation at 1024.
+train_dataloader:
+  total_batch_size: 8           # 1024 res is ~2.5x the memory of 640; bump to 16 if it fits
+  dataset:
+    transforms:
+      ops:
+        - {type: Mosaic, size: [1024, 1024]}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 110              # close mosaic + heavy aug for the last 10 epochs
+        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

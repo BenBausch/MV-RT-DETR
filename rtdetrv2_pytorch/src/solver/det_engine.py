@@ -17,6 +17,8 @@ from torch.cuda.amp.grad_scaler import GradScaler
 from ..optim import ModelEMA, Warmup
 from ..data import CocoEvaluator
 from ..misc import MetricLogger, SmoothedValue, dist_utils
+from ..misc import wandb_logger
+from ..misc.ultralytics_eval import UltralyticsDetMetrics
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -37,7 +39,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [{k: (v.to(device) if torch.is_tensor(v) else v) for k, v in t.items()} for t in targets]
         global_step = epoch * len(data_loader) + i
         metas = dict(epoch=epoch, step=i, global_step=global_step)
 
@@ -90,12 +92,21 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(loss=loss_value, **loss_dict_reduced)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        if writer and dist_utils.is_main_process():
-            writer.add_scalar('Loss/total', loss_value.item(), global_step)
-            for j, pg in enumerate(optimizer.param_groups):
-                writer.add_scalar(f'Lr/pg_{j}', pg['lr'], global_step)
-            for k, v in loss_dict_reduced.items():
-                writer.add_scalar(f'Loss/{k}', v.item(), global_step)
+        if dist_utils.is_main_process():
+            if writer:
+                writer.add_scalar('Loss/total', loss_value.item(), global_step)
+                for j, pg in enumerate(optimizer.param_groups):
+                    writer.add_scalar(f'Lr/pg_{j}', pg['lr'], global_step)
+                for k, v in loss_dict_reduced.items():
+                    writer.add_scalar(f'Loss/{k}', v.item(), global_step)
+
+            if wandb_logger.is_active():
+                wb = {'loss': loss_value.item(),
+                      'lr': optimizer.param_groups[0]['lr']}
+                for j, pg in enumerate(optimizer.param_groups):
+                    wb[f'lr_pg{j}'] = pg['lr']
+                wb.update({k: v.item() for k, v in loss_dict_reduced.items()})
+                wandb_logger.log_train(wb, global_step)
                 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -104,7 +115,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device):
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, ul_names=None):
     model.eval()
     criterion.eval()
     coco_evaluator.cleanup()
@@ -112,16 +123,21 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
     metric_logger = MetricLogger(delimiter="  ")
     header = 'Test:'
-    
+
+    # Ultralytics-equivalent metrics (per-class P/R/AP, IoU-matched), optional.
+    ul_metrics = None
+    if ul_names is not None:
+        ul_metrics = UltralyticsDetMetrics(ul_names)
+
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [{k: (v.to(device) if torch.is_tensor(v) else v) for k, v in t.items()} for t in targets]
 
         outputs = model(samples)
 
         # TODO (lyuwenyu), fix dataset converted using `convert_to_coco_api`?
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
-        
+
         results = postprocessor(outputs, orig_target_sizes)
 
         # if 'segm' in postprocessor.keys():
@@ -131,6 +147,18 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
         if coco_evaluator is not None:
             coco_evaluator.update(res)
+
+        if ul_metrics is not None:
+            # GT boxes are xyxy at the model-input resolution; predictions are at
+            # original-image scale. Rescale GT to original scale so IoU lines up.
+            ih, iw = samples.shape[-2], samples.shape[-1]
+            for t, r in zip(targets, results):
+                ow, oh = t['orig_size'].tolist()
+                gtb = t['boxes'].float()
+                if gtb.numel():
+                    s = torch.tensor([ow / iw, oh / ih, ow / iw, oh / ih], device=gtb.device)
+                    gtb = gtb * s
+                ul_metrics.update(r['boxes'], r['scores'], r['labels'], gtb, t['labels'])
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -150,7 +178,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
         if 'segm' in iou_types:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
-            
+
+    if ul_metrics is not None and dist_utils.is_main_process():
+        stats['ultralytics'] = ul_metrics.print_table()
+
     return stats, coco_evaluator
 
 

@@ -1,0 +1,44 @@
+task: detection
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', ]
+
+# 32 permanent teeth (FDI 11..48). category_id == 0-based label, so remap is OFF.
+num_classes: 32
+remap_mscoco_category: False
+
+# images are referenced by paths RELATIVE to this folder inside the json `file_name`
+_ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: *ortho_root
+    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_train.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 4
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: *ortho_root
+    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_val.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 4
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

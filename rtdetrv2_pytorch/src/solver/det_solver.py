@@ -7,7 +7,8 @@ import datetime
 
 import torch 
 
-from ..misc import dist_utils, profiler_utils
+from ..misc import dist_utils, profiler_utils, wandb_logger
+from ..misc.ultralytics_eval import write_confusion
 
 from ._solver import BaseSolver
 from .det_engine import train_one_epoch, evaluate
@@ -22,6 +23,12 @@ class DetSolver(BaseSolver):
 
         n_parameters = sum([p.numel() for p in self.model.parameters() if p.requires_grad])
         print(f'number of trainable parameters: {n_parameters}')
+
+        # ---- wandb (opt-in via use_wandb in config) ----
+        # NOTE: metrics only. Images are NEVER uploaded (patient data is confidential).
+        val_ds = getattr(self.val_dataloader, 'dataset', None)
+        class_names = getattr(val_ds, 'category2name', None)
+        wandb_logger.setup(self.cfg, class_names=class_names)
 
         best_stat = {'epoch': -1, }
 
@@ -65,20 +72,28 @@ class DetSolver(BaseSolver):
 
             module = self.ema.module if self.ema else self.model
             test_stats, coco_evaluator = evaluate(
-                module, 
-                self.criterion, 
-                self.postprocessor, 
-                self.val_dataloader, 
-                self.evaluator, 
-                self.device
+                module,
+                self.criterion,
+                self.postprocessor,
+                self.val_dataloader,
+                self.evaluator,
+                self.device,
+                ul_names=class_names,
             )
 
-            # TODO 
+            # ultralytics metrics are a nested dict, not a list of floats -> handle
+            # separately from the generic (coco_eval_bbox) list-of-floats stats.
+            ul_stats = test_stats.pop('ultralytics', None)
+            if ul_stats is not None and self.output_dir and dist_utils.is_main_process():
+                write_confusion(ul_stats.get('confusion'), ul_stats.get('names', {}),
+                                self.output_dir)
+
+            # TODO
             for k in test_stats:
                 if self.writer and dist_utils.is_main_process():
                     for i, v in enumerate(test_stats[k]):
                         self.writer.add_scalar(f'Test/{k}_{i}'.format(k), v, epoch)
-            
+
                 if k in best_stat:
                     best_stat['epoch'] = epoch if test_stats[k][0] > best_stat[k] else best_stat['epoch']
                     best_stat[k] = max(best_stat[k], test_stats[k][0])
@@ -90,6 +105,16 @@ class DetSolver(BaseSolver):
                     dist_utils.save_on_master(self.state_dict(), self.output_dir / 'best.pth')
 
             print(f'best_stat: {best_stat}')
+
+            # ---- wandb per-epoch logging ----
+            if wandb_logger.is_active():
+                wandb_logger.log_coco_stats(test_stats.get('coco_eval_bbox'), epoch)
+                if coco_evaluator is not None and 'bbox' in coco_evaluator.coco_eval:
+                    wandb_logger.log_per_class_ap(coco_evaluator.coco_eval['bbox'], epoch)
+                if ul_stats is not None:
+                    wandb_logger.log_ultralytics(ul_stats, epoch)
+                wandb_logger.log_summary({'best/AP': best_stat.get('coco_eval_bbox', 0),
+                                          'best/epoch': best_stat.get('epoch', -1)})
 
             log_stats = {
                 **{f'train_{k}': v for k, v in train_stats.items()},
@@ -117,14 +142,23 @@ class DetSolver(BaseSolver):
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('Training time {}'.format(total_time_str))
 
+        wandb_logger.finish()
+
 
     def val(self, ):
         self.eval()
-        
+
         module = self.ema.module if self.ema else self.model
+        val_ds = getattr(self.val_dataloader, 'dataset', None)
+        class_names = getattr(val_ds, 'category2name', None)
         test_stats, coco_evaluator = evaluate(module, self.criterion, self.postprocessor,
-                self.val_dataloader, self.evaluator, self.device)
-                
+                self.val_dataloader, self.evaluator, self.device, ul_names=class_names)
+
+        ul_stats = test_stats.get('ultralytics')
+        if ul_stats is not None and self.output_dir and dist_utils.is_main_process():
+            write_confusion(ul_stats.get('confusion'), ul_stats.get('names', {}),
+                            self.output_dir)
+
         if self.output_dir:
             dist_utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, self.output_dir / "eval.pth")
         

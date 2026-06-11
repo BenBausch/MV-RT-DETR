@@ -1,0 +1,79 @@
+__include__: [
+  '../dataset/ortho_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+
+output_dir: ./output/rtdetrv2_r18vd_ortho
+
+# keep last.pth + best.pth always; numbered checkpoints only every 10 epochs
+checkpoint_freq: 10
+
+# ---- experiment tracking (metrics only; NO images are ever uploaded) ----
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: ~            # default: the output_dir folder name
+  mode: online      # use 'offline' if the node has no internet / not logged in
+  tags: [r18vd, ortho]
+
+
+# ---- R18 backbone / smaller decoder (same as rtdetrv2_r18vd_120e_coco) ----
+PResNet:
+  depth: 18
+  freeze_at: -1
+  freeze_norm: False
+  pretrained: True
+
+
+HybridEncoder:
+  in_channels: [128, 256, 512]
+  hidden_dim: 256
+  expansion: 0.5
+
+
+RTDETRTransformerv2:
+  num_layers: 3
+
+
+# ---- training schedule (small dataset: 365 train imgs, ~22 iters/epoch) ----
+# NOTE: warmup_duration and ema.warmups are counted in ITERATIONS, and the
+# defaults (2000) are tuned for COCO (~7k iters/epoch). At 22 iters/epoch that
+# would be ~90 epochs of warmup, so we shrink them here.
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+
+# ~5 epochs of linear warmup
+lr_warmup_scheduler:
+  warmup_duration: 100
+
+ema:
+  warmups: 100
+
+# decay LR x0.1 near the end (milestones are in EPOCHS)
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      policy:
+        epoch: 117
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 16

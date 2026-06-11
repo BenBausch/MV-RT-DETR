@@ -1,0 +1,92 @@
+__include__: [
+  '../dataset/ortho_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# Per-tooth (32 FDI classes), R50, with an ORIENTATION-ENCODING input channel.
+# A 4th input channel encodes horizontal position (~-1 left .. +1 right, zero at a
+# per-view point: CENTER/UP/DOWN=0.5, LEFT=0.25, RIGHT=0.75). On horizontal flip the
+# channel mirrors and FDI labels swap quadrants (1<->2, 3<->4) -- see
+# RandomHorizontalFlipFDI / OrientationChannel.
+#
+# ENABLE/DISABLE the orientation encoding with the two settings tagged [ORI]:
+#   PResNet.in_channels: 4   (3 to disable)
+#   OrientationChannel enabled: True  (False to disable; in train AND val ops)
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_view_lr_embed
+checkpoint_freq: 10
+
+# full COCO-pretrained detector finetune (mismatched head + 4ch stem handled)
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+eval_spatial_size: [1024, 1024]
+
+PResNet:
+  in_channels: 4          # [ORI] 4 = RGB + orientation channel
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: r50vd_ortho_view_lr_embed
+  mode: online
+  tags: [r50vd, ortho, per-tooth, 32cls, orientation, res1024, lr_embed]
+
+
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+ema:
+  warmups: 100
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+# ---- augmentation: FDI-aware flip + photometric, then the orientation channel ----
+# (no mosaic/crop here: those move geometry and the orientation channel is built over
+#  the final canvas; flip is the geometry op we handle.)
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlipFDI, p: 0.5, num_classes: 32}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+        - {type: OrientationChannel, enabled: True}     # [ORI]
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: OrientationChannel, enabled: True}     # [ORI]

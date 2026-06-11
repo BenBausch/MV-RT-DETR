@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from .._misc import convert_to_tv_tensor, _boxes_keys
 from .._misc import Image, Video, Mask, BoundingBoxes
 from .._misc import SanitizeBoundingBoxes
+from ..ortho_views import build_fdi_flip_map, x0_from_filename
 
 from ...core import register
 
@@ -54,7 +55,7 @@ class PadToSize(T.Pad):
         BoundingBoxes,
     )
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        sp = F.get_spatial_size(flat_inputs[0])
+        sp = (F.get_size if hasattr(F, 'get_size') else F.get_spatial_size)(flat_inputs[0])
         h, w = self.size[1] - sp[0], self.size[0] - sp[1]
         self.padding = [0, 0, w, h]
         return dict(padding=self.padding)
@@ -132,7 +133,7 @@ class ConvertPILImage(T.Transform):
         self.dtype = dtype
         self.scale = scale
 
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         inpt = F.pil_to_tensor(inpt)
         if self.dtype == 'float32':
             inpt = inpt.float()
@@ -146,3 +147,82 @@ class ConvertPILImage(T.Transform):
 
     def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return self._transform(inpt, params)
+
+
+@register()
+class RandomHorizontalFlipFDI(T.Transform):
+    """Horizontal flip for the ortho dataset.
+
+    Flips image + boxes, and because a flip is a left<->right mirror it also:
+      - remaps FDI tooth labels across the midline (quadrant 1<->2, 3<->4), and
+      - records target['hflip'] so the orientation channel is mirrored to match.
+    """
+    _transformed_types = (PIL.Image.Image, Image, Video, Mask, BoundingBoxes)
+
+    def __init__(self, p: float = 0.5, num_classes: int = 32) -> None:
+        super().__init__()
+        self.p = p
+        self.register_buffer('fdi_flip_map', torch.tensor(build_fdi_flip_map(num_classes)))
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return F.horizontal_flip(inpt)
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
+    def __call__(self, *inputs: Any) -> Any:
+        sample = inputs if len(inputs) > 1 else inputs[0]
+        if torch.rand(1) >= self.p:
+            return sample
+
+        flipped = super().forward(*inputs)
+        if isinstance(flipped, (tuple, list)) and len(flipped) > 1 and isinstance(flipped[1], dict):
+            target = flipped[1]
+            if 'labels' in target and target['labels'].numel():
+                fmap = self.fdi_flip_map.to(target['labels'].device)
+                target['labels'] = fmap[target['labels']]
+            target['hflip'] = not bool(target.get('hflip', False))
+        return flipped
+
+
+@register()
+class OrientationChannel(T.Transform):
+    """Append a horizontal orientation-encoding channel to the image (CoordConv).
+
+    The channel is a sigmoid in image-x: ~-1 at the left edge, ~+1 at the right,
+    crossing 0 at a per-view position (CENTER/UP/DOWN -> 0.5; LEFT -> 0.25;
+    RIGHT -> 0.75). When the image was horizontally flipped (target['hflip']) the
+    channel is mirrored so it stays consistent with the (flipped) image + labels.
+
+    Must run AFTER ConvertPILImage (operates on the image tensor). The view is
+    looked up from the dataset's file name. `enabled=False` is a pass-through.
+    """
+    def __init__(self, enabled: bool = True, slope: float = 10.0) -> None:
+        super().__init__()
+        self.enabled = enabled
+        self.slope = slope
+
+    def __call__(self, *inputs: Any) -> Any:
+        sample = inputs if len(inputs) > 1 else inputs[0]
+        if not self.enabled:
+            return sample
+        image, target, dataset = sample
+
+        h, w = image.shape[-2], image.shape[-1]
+        img_id = int(target['image_id'].flatten()[0])
+        x0 = x0_from_filename(dataset.coco.loadImgs(img_id)[0]['file_name'])
+
+        # On flip, mirror the zero-position (x0 -> 1-x0) so a flipped LEFT view
+        # becomes identical to a native RIGHT view (and vice-versa); CENTER/UP/DOWN
+        # are symmetric (x0=0.5) so the channel is unchanged but labels still swap.
+        # This keeps the encoding consistent across native and flipped samples.
+        if target.get('hflip', False):
+            x0 = 1.0 - x0
+
+        xs = torch.linspace(0., 1., w)
+        row = 2.0 * torch.sigmoid(self.slope * (xs - x0)) - 1.0   # [w]
+        chan = row.view(1, 1, w).expand(1, h, w).to(image.dtype)
+
+        image = torch.cat([image.as_subclass(torch.Tensor), chan], dim=0)
+        target.pop('hflip', None)
+        return image, target, dataset

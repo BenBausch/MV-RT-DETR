@@ -164,21 +164,22 @@ class PResNet(nn.Module):
         num_stages=4, 
         return_idx=[0, 1, 2, 3], 
         act='relu',
-        freeze_at=-1, 
-        freeze_norm=True, 
-        pretrained=False):
+        freeze_at=-1,
+        freeze_norm=True,
+        pretrained=False,
+        in_channels=3):
         super().__init__()
 
         block_nums = ResNet_cfg[depth]
         ch_in = 64
         if variant in ['c', 'd']:
             conv_def = [
-                [3, ch_in // 2, 3, 2, "conv1_1"],
+                [in_channels, ch_in // 2, 3, 2, "conv1_1"],
                 [ch_in // 2, ch_in // 2, 3, 1, "conv1_2"],
                 [ch_in // 2, ch_in, 3, 1, "conv1_3"],
             ]
         else:
-            conv_def = [[3, ch_in, 7, 2, "conv1_1"]]
+            conv_def = [[in_channels, ch_in, 7, 2, "conv1_1"]]
 
         self.conv1 = nn.Sequential(OrderedDict([
             (name, ConvNormLayer(cin, cout, k, s, act=act)) for cin, cout, k, s, name in conv_def
@@ -215,6 +216,14 @@ class PResNet(nn.Module):
                 state = torch.hub.load_state_dict_from_url(donwload_url[depth], map_location='cpu')
             else:
                 state = torch.load(pretrained, map_location='cpu')
+            # pretrained stem is 3-channel; if we use extra input channels (e.g. an
+            # orientation-encoding channel), expand the first conv by copying RGB
+            # weights and zero-initializing the extra channels (starts as a no-op).
+            w = state.get('conv1.conv1_1.conv.weight')
+            if w is not None and in_channels != w.shape[1]:
+                new_w = torch.zeros(w.shape[0], in_channels, *w.shape[2:], dtype=w.dtype)
+                new_w[:, :w.shape[1]] = w
+                state['conv1.conv1_1.conv.weight'] = new_w
             self.load_state_dict(state)
             print(f'Load PResNet{depth} state_dict')
 

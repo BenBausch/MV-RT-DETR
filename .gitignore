@@ -173,3 +173,4 @@ rtdetrv2_pytorch/dataset/
 
 
 **/viz_test
+**/wandb

@@ -1,0 +1,63 @@
+__include__: [
+  '../dataset/ortho_detection_binary.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# EXPERIMENT B: tooth / no-tooth (1 class), ResNet-50 backbone.
+# Identical to rtdetrv2_r50vd_ortho.yml except it pulls the single-class dataset
+# (num_classes: 1) -> isolates localization quality from the hard tooth-ID task.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_binary
+
+checkpoint_freq: 10
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: r50vd_ortho_binary
+  mode: online
+  tags: [r50vd, ortho, tooth-no-tooth, 1cls]
+
+
+# ---- training schedule (small dataset: 365 imgs, ~22 iters/epoch) ----
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+
+ema:
+  warmups: 100
+
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      policy:
+        epoch: 117
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 16

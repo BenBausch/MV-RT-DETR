@@ -1,0 +1,64 @@
+__include__: [
+  '../dataset/ortho_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# EXPERIMENT A: per-tooth (32 FDI classes), ResNet-50 backbone.
+# Architecture (R50 / 6-layer decoder) comes straight from include/rtdetrv2_r50vd.yml
+# -- no PResNet/HybridEncoder overrides here, unlike the R18 config.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho
+
+checkpoint_freq: 10
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: r50vd_ortho_pertooth
+  mode: online
+  tags: [r50vd, ortho, per-tooth, 32cls]
+
+
+# ---- training schedule (small dataset: 365 imgs, ~22 iters/epoch) ----
+# warmup_duration / ema.warmups are in ITERATIONS; shrink from the COCO default 2000.
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+
+ema:
+  warmups: 100
+
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      policy:
+        epoch: 117
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 16

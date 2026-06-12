@@ -1,0 +1,79 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho.yml',
+]
+
+# EXPERIMENT: per-tooth (32 FDI classes) R50 + learnable OT assignment head.
+# Builds on rtdetrv2_r50vd_ortho.yml and adds:
+#   - OTAssignmentHead          (3-layer relational encoder + Sinkhorn matching)
+#   - loss_assignment           (SuperGlue-style matching NLL)
+#   - RTDETRAssignmentPostProcessor (unique-per-class detections at inference)
+# Each tooth class is predicted at most once; absence is allowed via the dustbin.
+#
+# Also uses the lr_embed recipe: 1024 res, FDI-aware flip, and the orientation
+# encoding 4th input channel (see rtdetrv2_r50vd_ortho_view.yml).
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_assign
+
+wandb:
+  name: r50vd_ortho_pertooth_assign
+  tags: [r50vd, ortho, per-tooth, 32cls, ot-assign, orientation, fdi_flip, res1024]
+
+# attach the assignment head to the RT-DETR model (4th component, after decoder)
+RTDETR:
+  assignment_head: OTAssignmentHead
+
+OTAssignmentHead:
+  hidden_dim: 256        # must match decoder hidden_dim
+  dim: 256               # working dim of the relational encoder
+  num_layers: 3          # keep the transformer small
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  sinkhorn_iters: 50
+  use_box_pos: True
+
+# swap the post-processor so eval enforces one-box-per-class
+postprocessor: RTDETRAssignmentPostProcessor
+RTDETRAssignmentPostProcessor:
+  use_hungarian: True
+  score_threshold: 0.0
+
+# add the assignment loss term
+RTDETRCriterionv2:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_assignment: 2}
+  losses: ['vfl', 'boxes', 'assignment']
+
+
+# ---- lr_embed recipe: 1024 res + FDI flip + orientation-encoding channel ----
+eval_spatial_size: [1024, 1024]      # must match the input size below
+
+PResNet:
+  in_channels: 4                     # RGB + orientation channel
+
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlipFDI, p: 0.5, num_classes: 32}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+        - {type: OrientationChannel, enabled: True}
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: OrientationChannel, enabled: True}

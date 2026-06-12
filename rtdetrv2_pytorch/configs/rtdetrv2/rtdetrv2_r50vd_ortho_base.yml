@@ -1,0 +1,80 @@
+__include__: [
+  '../dataset/ortho_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# BASELINE: plain per-tooth (32 FDI) R50. Same recipe as the orientation/flip runs
+# (COCO-pretrained finetune, 1024 res, photometric aug) but WITHOUT:
+#   - the FDI-aware horizontal flip   (no horizontal flip at all; a plain flip would
+#                                      corrupt FDI left/right labels)
+#   - the orientation-encoding channel (3-channel input)
+#   - the OT assignment head
+# This is the reference point for the flip / orientation / assignment ablations.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_base
+checkpoint_freq: 10
+
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+eval_spatial_size: [1024, 1024]
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: r50vd_ortho_base
+  mode: online
+  tags: [r50vd, ortho, per-tooth, 32cls, base, no_flip, no_orientation, res1024]
+
+
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+ema:
+  warmups: 100
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

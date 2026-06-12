@@ -115,6 +115,58 @@ class RTDETRCriterionv2(nn.Module):
         losses['loss_giou'] = loss_giou.sum() / num_boxes
         return losses
 
+    def loss_assignment(self, outputs, targets, indices, num_boxes):
+        """Supervise the OT assignment head (SuperGlue-style matching NLL).
+
+        Uses the Hungarian `indices` already computed against the GT to know which
+        query should carry which class, then maximizes the log assignment at:
+          - matched cells   (query i, class c)            -> positive matches
+          - dustbin column  (unmatched query -> nothing)  -> dropped boxes
+          - dustbin row     (absent class -> no query)     -> missing teeth
+
+        The three terms are averaged separately and summed, so the many unmatched
+        queries (N >> C) do not swamp the few positive matches.
+        """
+        assert 'assignment_log' in outputs, 'model did not produce `assignment_log`'
+        log_P = outputs['assignment_log']             # [B, N+1, C+1]
+        N, C = log_P.shape[1] - 1, log_P.shape[2] - 1
+        db_col, db_row = C, N                         # dustbin indices
+
+        pos_sum = log_P.new_zeros(())
+        negq_sum = log_P.new_zeros(())
+        negc_sum = log_P.new_zeros(())
+        n_pos = n_negq = n_negc = 0
+
+        for b, (src_idx, tgt_idx) in enumerate(indices):
+            lp = log_P[b]                             # [N+1, C+1]
+            matched_cls = targets[b]['labels'][tgt_idx].to(torch.int64)
+
+            # positive matches: query i should map to its GT class
+            if src_idx.numel() > 0:
+                pos_sum = pos_sum - lp[src_idx, matched_cls].sum()
+                n_pos += src_idx.numel()
+
+            # unmatched queries -> dustbin column
+            matched_mask = torch.zeros(N, dtype=torch.bool, device=lp.device)
+            matched_mask[src_idx] = True
+            unmatched_q = (~matched_mask).nonzero(as_tuple=True)[0]
+            if unmatched_q.numel() > 0:
+                negq_sum = negq_sum - lp[unmatched_q, db_col].sum()
+                n_negq += unmatched_q.numel()
+
+            # classes absent from this image -> dustbin row
+            present = torch.zeros(C, dtype=torch.bool, device=lp.device)
+            present[matched_cls] = True
+            absent_c = (~present).nonzero(as_tuple=True)[0]
+            if absent_c.numel() > 0:
+                negc_sum = negc_sum - lp[db_row, absent_c].sum()
+                n_negc += absent_c.numel()
+
+        loss = pos_sum / max(n_pos, 1) \
+            + negq_sum / max(n_negq, 1) \
+            + negc_sum / max(n_negc, 1)
+        return {'loss_assignment': loss}
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -132,6 +184,7 @@ class RTDETRCriterionv2(nn.Module):
             'boxes': self.loss_boxes,
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
+            'assignment': self.loss_assignment,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -171,6 +224,8 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
+                    if loss == 'assignment':
+                        continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
@@ -184,6 +239,8 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
+                    if loss == 'assignment':
+                        continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
@@ -207,6 +264,8 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
+                    if loss == 'assignment':
+                        continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}

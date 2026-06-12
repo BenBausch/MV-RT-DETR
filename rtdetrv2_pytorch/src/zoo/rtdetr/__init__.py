@@ -12,3 +12,7 @@ from .rtdetr_postprocessor import RTDETRPostProcessor
 # v2
 from .rtdetrv2_decoder import RTDETRTransformerv2
 from .rtdetrv2_criterion import RTDETRCriterionv2
+
+# learnable optimal-transport class assignment
+from .assignment_head import OTAssignmentHead
+from .assignment_postprocessor import RTDETRAssignmentPostProcessor

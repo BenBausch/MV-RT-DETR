@@ -255,6 +255,7 @@ class TransformerDecoder(nn.Module):
                 memory_mask=None):
         dec_out_bboxes = []
         dec_out_logits = []
+        dec_out_embeds = []   # last-layer hidden states, exposed for the assignment head
         ref_points_detach = F.sigmoid(ref_points_unact)
 
         output = target
@@ -268,6 +269,7 @@ class TransformerDecoder(nn.Module):
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
+                dec_out_embeds.append(output)
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
@@ -275,13 +277,14 @@ class TransformerDecoder(nn.Module):
 
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
+                dec_out_embeds.append(output)
                 dec_out_bboxes.append(inter_ref_bbox)
                 break
 
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach()
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_embeds)
 
 
 @register()
@@ -572,7 +575,7 @@ class RTDETRTransformerv2(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, out_embeds = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
@@ -585,8 +588,11 @@ class RTDETRTransformerv2(nn.Module):
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
+            dn_out_embeds, out_embeds = torch.split(out_embeds, dn_meta['dn_num_split'], dim=2)
 
-        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
+        # `pred_embed` is the last-layer decoder hidden state per query; the OT
+        # assignment head consumes it alongside `pred_logits` / `pred_boxes`.
+        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_embed': out_embeds[-1]}
 
         if self.training and self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])

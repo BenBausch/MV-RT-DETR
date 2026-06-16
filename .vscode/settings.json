@@ -1,0 +1,13 @@
+{
+  // uv .venv at the repo root (torch/cuda stack lives here)
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+  // The non-debug "Run Python File" play button has no fixed-cwd option, so run
+  // it from the file's own directory is wrong for this repo; prefer the debug
+  // play (launch.json pins cwd=rtdetrv2_pytorch). For the terminal run button,
+  // execute in the workspace root rather than the file's directory.
+  "python.terminal.executeInFileDir": false,
+
+  // let Pylance resolve `import src` from the rtdetrv2_pytorch package
+  "python.analysis.extraPaths": ["${workspaceFolder}/rtdetrv2_pytorch"]
+}

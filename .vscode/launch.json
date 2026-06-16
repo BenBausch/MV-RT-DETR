@@ -1,0 +1,18 @@
+{
+  // Used by the play button's "Python Debugger: Debug Python File".
+  // Runs the open file with the working directory pinned to rtdetrv2_pytorch,
+  // so scripts that use relative paths (configs/..., tools/...) and the
+  // `import src` bootstrap resolve correctly.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Current File (cwd=rtdetrv2_pytorch)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/rtdetrv2_pytorch",
+      "justMyCode": false
+    }
+  ]
+}

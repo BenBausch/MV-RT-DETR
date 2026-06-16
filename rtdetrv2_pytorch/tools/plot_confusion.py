@@ -24,19 +24,14 @@ def load_matrix(path):
     return mat, gt_labels, pred_labels
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("csv", help="path to confusion_matrix.csv")
-    ap.add_argument("--out", default=None, help="output PNG (default: alongside csv)")
-    ap.add_argument("--title", default=None)
-    args = ap.parse_args()
-
-    mat, gt_labels, pred_labels = load_matrix(args.csv)
+def plot_confusion(csv_path, out=None, title=None):
+    """Render a confusion_matrix.csv as a heatmap PNG and return the output path."""
+    mat, gt_labels, pred_labels = load_matrix(csv_path)
     n = len(gt_labels)
     norm = mat / mat.sum(axis=1, keepdims=True).clip(min=1)
 
     acc = mat.trace() / mat.sum() if mat.sum() else 0.0
-    title = args.title or f"{Path(args.csv).parent.name}  (top-1 class acc {acc:.1%})"
+    title = title or f"{Path(csv_path).parent.name}  (top-1 class acc {acc:.1%})"
 
     fig, ax = plt.subplots(figsize=(max(8, n * 0.45), max(7, n * 0.42)))
     im = ax.imshow(norm, cmap="viridis", vmin=0, vmax=1)
@@ -52,8 +47,20 @@ def main():
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="row-normalized rate")
     fig.tight_layout()
 
-    out = args.out or str(Path(args.csv).with_suffix(".png"))
+    out = out or str(Path(csv_path).with_suffix(".png"))
     fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("csv", help="path to confusion_matrix.csv")
+    ap.add_argument("--out", default=None, help="output PNG (default: alongside csv)")
+    ap.add_argument("--title", default=None)
+    args = ap.parse_args()
+
+    out = plot_confusion(args.csv, out=args.out, title=args.title)
     print(f"wrote {out}")
 
 

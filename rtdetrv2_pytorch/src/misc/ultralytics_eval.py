@@ -13,10 +13,16 @@ Reports, per class and overall ("all"):
 
 Predictions and ground truth must be xyxy boxes in the SAME coordinate space.
 """
+import os
+import sys
+
 import numpy as np
 import torch
 
 from ultralytics.utils.metrics import box_iou, ap_per_class
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+from plot_confusion import plot_confusion
 
 
 class UltralyticsDetMetrics:
@@ -172,7 +178,6 @@ def write_confusion(confusion, names, out_dir):
       confusion_matrix.csv : full NxN counts (rows=gt, cols=pred)
       confusion_pairs.csv  : gt_class,pred_class,count,correct (nonzero, count-sorted)
     """
-    import os
     if confusion is None:
         return
     confusion = np.asarray(confusion)
@@ -181,10 +186,12 @@ def write_confusion(confusion, names, out_dir):
     out_dir = str(out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    with open(os.path.join(out_dir, 'confusion_matrix.csv'), 'w') as f:
+    matrix_csv = os.path.join(out_dir, 'confusion_matrix.csv')
+    with open(matrix_csv, 'w') as f:
         f.write('gt\\pred,' + ','.join(labels) + '\n')
         for i in range(nc):
             f.write(labels[i] + ',' + ','.join(str(int(v)) for v in confusion[i]) + '\n')
+    plot_confusion(matrix_csv)
 
     pairs = [(labels[i], labels[j], int(confusion[i, j]), int(i == j))
              for i in range(nc) for j in range(nc) if confusion[i, j] > 0]

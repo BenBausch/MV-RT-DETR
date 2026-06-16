@@ -1,9 +1,10 @@
 """Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
-import os 
-import sys 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+import os
+import sys
+# repo root (rtdetrv2_pytorch) = two levels up from tools/scripts/, so `src` resolves
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 import argparse
 

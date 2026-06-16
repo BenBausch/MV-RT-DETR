@@ -4,19 +4,19 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-# tooth / no-tooth detection: a single foreground class (background is implicit)
+# tooth / no-tooth detection: a single foreground class (background is implicit).
+# single_class collapses all 32 FDI labels to one 'tooth' class on the fly.
 num_classes: 1
-remap_mscoco_category: False
 
 _ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9
 
 train_dataloader:
   type: DataLoader
   dataset:
-    type: CocoDetection
+    type: OrthoDetection
     img_folder: *ortho_root
-    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_train_tooth.json
-    return_masks: False
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/train.txt
+    single_class: True
     transforms:
       type: Compose
       ops: ~
@@ -29,10 +29,10 @@ train_dataloader:
 val_dataloader:
   type: DataLoader
   dataset:
-    type: CocoDetection
+    type: OrthoDetection
     img_folder: *ortho_root
-    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_val_tooth.json
-    return_masks: False
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/val.txt
+    single_class: True
     transforms:
       type: Compose
       ops: ~

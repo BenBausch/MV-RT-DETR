@@ -4,20 +4,20 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-# 32 permanent teeth (FDI 11..48). category_id == 0-based label, so remap is OFF.
+# 32 permanent teeth (FDI 11..48). category_id == 0-based label. num_classes is
+# shared into OrthoDetection, pinning categories to 0..31 across all splits.
 num_classes: 32
-remap_mscoco_category: False
 
-# images are referenced by paths RELATIVE to this folder inside the json `file_name`
-_ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9
+# OrthoDetection reads the YOLO dataset directly: images + sibling .txt labels
+# live under this root; split files list one image path per line.
+_ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects
 
 train_dataloader:
   type: DataLoader
   dataset:
-    type: CocoDetection
+    type: OrthoDetection
     img_folder: *ortho_root
-    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_train.json
-    return_masks: False
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects/train.txt
     transforms:
       type: Compose
       ops: ~
@@ -30,10 +30,9 @@ train_dataloader:
 val_dataloader:
   type: DataLoader
   dataset:
-    type: CocoDetection
+    type: OrthoDetection
     img_folder: *ortho_root
-    ann_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_v9/coco/instances_val.json
-    return_masks: False
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects/val.txt
     transforms:
       type: Compose
       ops: ~

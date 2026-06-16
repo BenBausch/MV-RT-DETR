@@ -21,7 +21,7 @@ import torch
 
 from ultralytics.utils.metrics import box_iou, ap_per_class
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'visualization'))
 from plot_confusion import plot_confusion
 
 

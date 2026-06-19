@@ -1,0 +1,6 @@
+the "at most once" constraint is exact and the literature explicitly exploits it:
+
+-Vertebrae identification/labeling (spine CT/MRI). C1–C7, T1–T12, L1–L5 — each label occurs at most once per scan. This is probably your single best reference field: it's a known-hard problem precisely because of the uniqueness + sequential-ordering constraint, and methods enforce it with post-hoc constraints, CRFs, or message-passing. They report identification rate (per-vertebra correct-label accuracy) and localization error, not mAP — for the same reason you found.
+-Rib labeling (1–12 left/right), and multi-organ detection in CT/MRI (liver, spleen, both kidneys, pancreas…) — each organ class is unique per volume.
+-Cephalometric landmark detection (orthodontics) and facial landmark detection — a fixed set of named points, each present once. Reported as mean radial error / success-detection-rate, not AP.
+-Human pose / keypoint estimation (COCO keypoints: 17 named joints per person, each once). The per-instance keypoint set has exactly your constraint; evaluation uses OKS, not box-AP.

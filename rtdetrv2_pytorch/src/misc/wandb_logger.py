@@ -31,8 +31,13 @@ def is_active() -> bool:
     return _RUN is not None
 
 
-def setup(cfg, class_names=None):
-    """Initialize a wandb run from the YAML config. Returns the run or None."""
+def setup(cfg, class_names=None, train_size=None):
+    """Initialize a wandb run from the YAML config. Returns the run or None.
+
+    If `train_size` (the number of images in the train split) is given, a
+    dynamic `train_<N>` tag is appended to the config's static tags so runs are
+    filterable by dataset size without editing each YAML.
+    """
     global _RUN, _CLASS_NAMES
     if _RUN is not None:
         return _RUN
@@ -47,13 +52,16 @@ def setup(cfg, class_names=None):
     name = wcfg.get("name") or (
         os.path.basename(str(cfg.output_dir).rstrip("/")) if cfg.output_dir else None
     )
+    tags = list(wcfg.get("tags", None) or [])
+    if train_size is not None:
+        tags.append(f"train_{train_size}")
     _RUN = wandb.init(
         project=wcfg.get("project", "rtdetr"),
         name=name,
         dir=str(cfg.output_dir) if cfg.output_dir else None,
         config=yaml_cfg,
         mode=wcfg.get("mode", "online"),
-        tags=wcfg.get("tags", None),
+        tags=tags or None,
         resume="allow",
     )
     _CLASS_NAMES = class_names
@@ -63,7 +71,7 @@ def setup(cfg, class_names=None):
     _RUN.define_metric("train/*", step_metric="train/global_step")
     _RUN.define_metric("epoch")
     _RUN.define_metric("val/*", step_metric="epoch")
-    _RUN.define_metric("val_AP_per_class/*", step_metric="epoch")
+    _RUN.define_metric("val_per_class/*", step_metric="epoch")
 
     print(f"[wandb] logging to run '{_RUN.name}' (project '{_RUN.project}')")
     return _RUN
@@ -154,6 +162,48 @@ def log_ultralytics(metrics: dict, epoch: int, prefix: str = "val_ul"):
         data[f"{prefix}_per_class/{name}_mAP50-95"] = d["ap"]
     data["epoch"] = epoch
     log(data)
+
+
+def log_per_tooth(metrics: dict, epoch: int = None, prefix: str = "val"):
+    """Per-tooth metrics dict (from PerToothMetrics.compute()).
+
+    Logs aggregate scalars, the duplicate-class rate, the recall-loss buckets, and
+    per-class P/R/F1 + buckets for EVERY tooth. With `epoch` set, logs per-epoch
+    curves (validation, incl. all per-class series); with epoch=None, writes to the
+    run summary (final test metrics). Metrics only -- no images.
+    """
+    if _RUN is None or not metrics:
+        return
+    data = {}
+    for k in ("micro_f1", "macro_f1", "weighted_f1", "micro_p", "micro_r",
+              "macro_p", "macro_r", "weighted_p", "weighted_r"):
+        if k in metrics:
+            data[f"{prefix}/{k}"] = float(metrics[k])
+    n = metrics.get("n_imgs", 0) or 0
+    data[f"{prefix}/dup_img_pct"] = (100.0 * metrics.get("imgs_with_dup", 0) / n) if n else 0.0
+    data[f"{prefix}/total_dups"] = metrics.get("total_dups", 0)
+    # recall-loss buckets as fractions of present teeth (correct+misloc+miscls+missed)
+    sup = sum(metrics.get(k, 0) for k in ("correct", "misloc", "miscls", "missed"))
+    for k in ("correct", "misloc", "miscls", "missed"):
+        data[f"{prefix}/{k}_frac"] = (metrics.get(k, 0) / sup) if sup else 0.0
+
+    # per-class P/R/F1 + recall-loss buckets, logged on every call
+    for cid, d in (metrics.get("per_class") or {}).items():
+        name = (_CLASS_NAMES or {}).get(cid, str(cid))
+        base = f"{prefix}_per_class/{name}"
+        data[f"{base}/f1"] = d["f1"]
+        data[f"{base}/precision"] = d["p"]
+        data[f"{base}/recall"] = d["r"]
+        data[f"{base}/correct"] = d["correct"]
+        data[f"{base}/misloc"] = d["misloc"]
+        data[f"{base}/miscls"] = d["miscls"]
+        data[f"{base}/missed"] = d["missed"]
+
+    if epoch is not None:
+        data["epoch"] = epoch
+        log(data)
+    else:
+        log_summary(data)
 
 
 def finish():

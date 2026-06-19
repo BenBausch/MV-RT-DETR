@@ -1,11 +1,14 @@
 """Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
-import time 
+import time
 import json
+import csv
+import copy
 import datetime
+from pathlib import Path
 
-import torch 
+import torch
 
 from ..misc import dist_utils, profiler_utils, wandb_logger
 from ..misc.ultralytics_eval import write_confusion
@@ -28,7 +31,15 @@ class DetSolver(BaseSolver):
         # NOTE: metrics only. Images are NEVER uploaded (patient data is confidential).
         val_ds = getattr(self.val_dataloader, 'dataset', None)
         class_names = getattr(val_ds, 'category2name', None)
-        wandb_logger.setup(self.cfg, class_names=class_names)
+        train_ds = getattr(self.train_dataloader, 'dataset', None)
+        train_size = len(train_ds) if train_ds is not None else None
+        wandb_logger.setup(self.cfg, class_names=class_names, train_size=train_size)
+
+        # per-tooth eval operating point (score / IoU threshold), shared with the
+        # end-of-training test pass. Defaults: score 0.5 / IoU 0.5.
+        pt_cfg = self.cfg.yaml_cfg.get('per_tooth_eval', {}) or {}
+        pt_score_thr = float(pt_cfg.get('score_thr', 0.5))
+        pt_iou_thr = float(pt_cfg.get('iou_thr', 0.5))
 
         best_stat = {'epoch': -1, }
 
@@ -79,13 +90,15 @@ class DetSolver(BaseSolver):
                 self.evaluator,
                 self.device,
                 ul_names=class_names,
+                pt_score_thr=pt_score_thr,
+                pt_iou_thr=pt_iou_thr,
             )
 
-            # ultralytics metrics are a nested dict, not a list of floats -> handle
-            # separately from the generic (coco_eval_bbox) list-of-floats stats.
-            ul_stats = test_stats.pop('ultralytics', None)
-            if ul_stats is not None and self.output_dir and dist_utils.is_main_process():
-                write_confusion(ul_stats.get('confusion'), ul_stats.get('names', {}),
+            # per-tooth metrics are a nested dict, not a list of floats -> handle
+            # separately from the generic (per_tooth_f1) list-of-floats stats.
+            pt_stats = test_stats.pop('per_tooth', None)
+            if pt_stats is not None and self.output_dir and dist_utils.is_main_process():
+                write_confusion(pt_stats.get('confusion'), pt_stats.get('names', {}),
                                 self.output_dir)
 
             # TODO
@@ -106,14 +119,11 @@ class DetSolver(BaseSolver):
 
             print(f'best_stat: {best_stat}')
 
-            # ---- wandb per-epoch logging ----
+            # ---- wandb per-epoch validation logging (per-tooth, incl. per-class) ----
             if wandb_logger.is_active():
-                wandb_logger.log_coco_stats(test_stats.get('coco_eval_bbox'), epoch)
-                if coco_evaluator is not None and 'bbox' in coco_evaluator.coco_eval:
-                    wandb_logger.log_per_class_ap(coco_evaluator.coco_eval['bbox'], epoch)
-                if ul_stats is not None:
-                    wandb_logger.log_ultralytics(ul_stats, epoch)
-                wandb_logger.log_summary({'best/AP': best_stat.get('coco_eval_bbox', 0),
+                if pt_stats is not None:
+                    wandb_logger.log_per_tooth(pt_stats, epoch, prefix='val')
+                wandb_logger.log_summary({'best/micro_f1': best_stat.get('per_tooth_f1', 0),
                                           'best/epoch': best_stat.get('epoch', -1)})
 
             log_stats = {
@@ -142,24 +152,116 @@ class DetSolver(BaseSolver):
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('Training time {}'.format(total_time_str))
 
+        # ---- end-of-training TEST evaluation on the BEST checkpoint ----
+        # Runs exactly once, after all epochs; uses the test split (not val) and the
+        # best.pth selected by val micro-F1 (NOT the last-epoch weights).
+        self._test_eval(class_names, best_stat.get('epoch', -1), pt_score_thr, pt_iou_thr)
+
         wandb_logger.finish()
+
+
+    def _build_test_dataloader(self):
+        """Derive a test-split loader from the (already-merged) val_dataloader config,
+        so transforms (incl. OrientationChannel) match val exactly; only the split file
+        differs. Returns None if no test split file is found."""
+        if 'val_dataloader' not in self.cfg.yaml_cfg:
+            return None
+        pt_cfg = self.cfg.yaml_cfg.get('per_tooth_eval', {}) or {}
+        vcfg = copy.deepcopy(self.cfg.yaml_cfg['val_dataloader'])
+        val_split = vcfg.get('dataset', {}).get('split_file')
+        if not val_split:
+            return None
+        test_split = pt_cfg.get('test_split_file') or str(Path(val_split).with_name('test.txt'))
+        if not Path(test_split).exists():
+            print(f'[test-eval] no test split at {test_split}; skipping test evaluation')
+            return None
+        vcfg['dataset']['split_file'] = test_split
+        self.cfg.yaml_cfg['test_dataloader'] = vcfg
+        loader = self.cfg.build_dataloader('test_dataloader')
+        return dist_utils.warp_loader(loader, shuffle=False)
+
+    def _test_eval(self, class_names, best_epoch, pt_score_thr, pt_iou_thr):
+        if not dist_utils.is_main_process():
+            return
+        test_loader = self._build_test_dataloader()
+        if test_loader is None:
+            return
+
+        # reload the best checkpoint (fall back to last.pth) so test reflects the
+        # selected model, not the final-epoch weights.
+        ckpt = None
+        if self.output_dir:
+            for name in ('best.pth', 'last.pth'):
+                if (self.output_dir / name).exists():
+                    ckpt = self.output_dir / name
+                    break
+        if ckpt is not None:
+            print(f'[test-eval] loading checkpoint {ckpt}')
+            self.load_resume_state(str(ckpt))
+        module = self.ema.module if self.ema else self.model
+
+        print(f'[test-eval] running per-tooth metrics on the TEST split '
+              f'(score_thr={pt_score_thr}, IoU={pt_iou_thr})')
+        test_stats, _ = evaluate(
+            module, self.criterion, self.postprocessor, test_loader,
+            None, self.device, ul_names=class_names,
+            pt_score_thr=pt_score_thr, pt_iou_thr=pt_iou_thr,
+        )
+        pt = test_stats.get('per_tooth')
+        if pt is None:
+            return
+
+        if self.output_dir:
+            test_dir = self.output_dir / 'test'
+            write_confusion(pt.get('confusion'), pt.get('names', {}), test_dir)
+            self._write_per_class_csv(pt, test_dir / 'test_per_class.csv', pt_score_thr, pt_iou_thr)
+
+        if wandb_logger.is_active():
+            wandb_logger.log_per_tooth(pt, epoch=None, prefix='test')
+            wandb_logger.log_summary({'test/source_epoch': best_epoch})
+
+    @staticmethod
+    def _write_per_class_csv(pt, path, score_thr, iou_thr):
+        names = pt.get('names', {})
+        rows = []
+        for c, d in sorted(pt['per_class'].items()):
+            rows.append(dict(
+                fdi=names.get(c, str(c)), class_id=c, score_thr=score_thr, iou=iou_thr,
+                support=d['support'], tp=d['tp'], fp=d['fp'], fn=d['fn'], dup=d['dup'],
+                correct=d['correct'], misloc=d['misloc'], miscls=d['miscls'], missed=d['missed'],
+                precision=round(d['p'], 4), recall=round(d['r'], 4), f1=round(d['f1'], 4),
+            ))
+        if not rows:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f'[test-eval] wrote per-class metrics -> {path}')
 
 
     def val(self, ):
         self.eval()
 
+        pt_cfg = self.cfg.yaml_cfg.get('per_tooth_eval', {}) or {}
+        pt_score_thr = float(pt_cfg.get('score_thr', 0.5))
+        pt_iou_thr = float(pt_cfg.get('iou_thr', 0.5))
+
         module = self.ema.module if self.ema else self.model
         val_ds = getattr(self.val_dataloader, 'dataset', None)
         class_names = getattr(val_ds, 'category2name', None)
         test_stats, coco_evaluator = evaluate(module, self.criterion, self.postprocessor,
-                self.val_dataloader, self.evaluator, self.device, ul_names=class_names)
+                self.val_dataloader, self.evaluator, self.device, ul_names=class_names,
+                pt_score_thr=pt_score_thr, pt_iou_thr=pt_iou_thr)
 
-        ul_stats = test_stats.get('ultralytics')
-        if ul_stats is not None and self.output_dir and dist_utils.is_main_process():
-            write_confusion(ul_stats.get('confusion'), ul_stats.get('names', {}),
+        pt_stats = test_stats.get('per_tooth')
+        if pt_stats is not None and self.output_dir and dist_utils.is_main_process():
+            write_confusion(pt_stats.get('confusion'), pt_stats.get('names', {}),
                             self.output_dir)
 
-        if self.output_dir:
+        # COCO is disabled for ortho runs (no evaluator); only dump when present.
+        if self.output_dir and coco_evaluator is not None and 'bbox' in coco_evaluator.coco_eval:
             dist_utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, self.output_dir / "eval.pth")
-        
+
         return

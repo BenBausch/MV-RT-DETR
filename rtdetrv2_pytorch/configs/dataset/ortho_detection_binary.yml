@@ -1,8 +1,10 @@
 task: detection
 
-evaluator:
-  type: CocoEvaluator
-  iou_types: ['bbox', ]
+# COCO eval removed: validation uses per-tooth P/R/F1 (src/misc/per_tooth_eval.py),
+# best.pth on val micro-F1, test split evaluated once at end of training.
+per_tooth_eval:
+  score_thr: 0.5
+  iou_thr: 0.5
 
 # tooth / no-tooth detection: a single foreground class (background is implicit).
 # single_class collapses all 32 FDI labels to one 'tooth' class on the fly.

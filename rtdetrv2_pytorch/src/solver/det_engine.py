@@ -18,7 +18,7 @@ from ..optim import ModelEMA, Warmup
 from ..data import CocoEvaluator
 from ..misc import MetricLogger, SmoothedValue, dist_utils
 from ..misc import wandb_logger
-from ..misc.ultralytics_eval import UltralyticsDetMetrics
+from ..misc.per_tooth_eval import PerToothMetrics
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -115,19 +115,21 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, ul_names=None):
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, ul_names=None, pt_score_thr=0.5, pt_iou_thr=0.5):
     model.eval()
     criterion.eval()
-    coco_evaluator.cleanup()
-    iou_types = coco_evaluator.iou_types
+    if coco_evaluator is not None:
+        coco_evaluator.cleanup()
+    iou_types = coco_evaluator.iou_types if coco_evaluator is not None else []
 
     metric_logger = MetricLogger(delimiter="  ")
     header = 'Test:'
 
-    # Ultralytics-equivalent metrics (per-class P/R/AP, IoU-matched), optional.
-    ul_metrics = None
+    # Per-tooth metrics (class-aware P/R/F1, dup rate, recall-loss buckets, confusion
+    # matrix) -- the primary ortho metric, replaces COCO. Optional (needs class names).
+    pt_metrics = None
     if ul_names is not None:
-        ul_metrics = UltralyticsDetMetrics(ul_names)
+        pt_metrics = PerToothMetrics(ul_names, score_thr=pt_score_thr, iou_thr=pt_iou_thr)
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
@@ -148,7 +150,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
-        if ul_metrics is not None:
+        if pt_metrics is not None:
             # GT boxes are xyxy at the model-input resolution; predictions are at
             # original-image scale. Rescale GT to original scale so IoU lines up.
             ih, iw = samples.shape[-2], samples.shape[-1]
@@ -158,7 +160,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 if gtb.numel():
                     s = torch.tensor([ow / iw, oh / ih, ow / iw, oh / ih], device=gtb.device)
                     gtb = gtb * s
-                ul_metrics.update(r['boxes'], r['scores'], r['labels'], gtb, t['labels'])
+                pt_metrics.update(r['boxes'], r['scores'], r['labels'], gtb, t['labels'])
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -179,8 +181,13 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         if 'segm' in iou_types:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
 
-    if ul_metrics is not None and dist_utils.is_main_process():
-        stats['ultralytics'] = ul_metrics.print_table()
+    if pt_metrics is not None and dist_utils.is_main_process():
+        pt = pt_metrics.print_table()
+        stats['per_tooth'] = pt
+        # list-of-floats summary so the generic best-stat / tensorboard loop works;
+        # index [0] = micro-F1 drives best.pth selection.
+        stats['per_tooth_f1'] = [pt['micro_f1'], pt['macro_f1'], pt['weighted_f1'],
+                                 pt['micro_p'], pt['micro_r']]
 
     return stats, coco_evaluator
 

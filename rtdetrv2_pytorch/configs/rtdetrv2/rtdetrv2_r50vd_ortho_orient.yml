@@ -16,7 +16,7 @@ __include__: [
 #   PResNet.in_channels: 4   (3 to disable)
 #   OrientationChannel enabled: True  (False to disable; in train AND val ops)
 
-output_dir: ./output/rtdetrv2_r50vd_ortho_view_lr_embed
+output_dir: ./output/rtdetrv2_r50vd_ortho_orient_lr_embed
 checkpoint_freq: 10
 
 # full COCO-pretrained detector finetune (mismatched head + 4ch stem handled)
@@ -30,7 +30,7 @@ PResNet:
 use_wandb: True
 wandb:
   project: rtdetr-ortho
-  name: r50vd_ortho_view_lr_embed
+  name: r50vd_ortho_orient_lr_embed
   mode: online
   tags: [r50vd, ortho, per-tooth, 32cls, orientation, res1024, lr_embed]
 

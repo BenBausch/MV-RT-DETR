@@ -29,14 +29,17 @@ OTAssignmentHead:
   nhead: 8
   dim_feedforward: 1024
   dropout: 0.0
-  sinkhorn_iters: 50
+  sinkhorn_iters: 50     # backprops through all iters; 20-30 usually suffices
   use_box_pos: True
+  use_pos_proto: True    # explicit per-class spatial prior (geometry-vs-class cost)
 
 # swap the post-processor so eval enforces one-box-per-class
 postprocessor: RTDETRAssignmentPostProcessor
 RTDETRAssignmentPostProcessor:
   use_hungarian: True
+  use_dustbin: True      # respect the trained dustbin -> allow absent/missing teeth
   score_threshold: 0.0
+  match_threshold: 0.0   # extra floor on assignment prob P[q,c] (0 = rely on dustbin)
 
 # add the assignment loss term
 RTDETRCriterionv2:

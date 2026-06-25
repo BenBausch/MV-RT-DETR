@@ -97,7 +97,8 @@ class OTAssignmentHead(nn.Module):
                  dim_feedforward=1024,
                  dropout=0.0,
                  sinkhorn_iters=50,
-                 use_box_pos=True):
+                 use_box_pos=True,
+                 use_pos_proto=True):
         super().__init__()
         self.num_classes = num_classes
         self.sinkhorn_iters = sinkhorn_iters
@@ -124,10 +125,21 @@ class OTAssignmentHead(nn.Module):
         self.class_proto = nn.Parameter(torch.empty(num_classes, dim))
         nn.init.normal_(self.class_proto, std=dim ** -0.5)
 
+        # explicit per-class spatial prior: a learnable location prototype scored
+        # directly against the box positional embedding, so the cost has a direct
+        # geometry-vs-class term (tooth identity is dominated by anatomical
+        # position). Requires the box positional encoding to be enabled.
+        self.use_pos_proto = use_pos_proto and use_box_pos
+        if self.use_pos_proto:
+            self.pos_proto = nn.Parameter(torch.empty(num_classes, dim))
+            nn.init.normal_(self.pos_proto, std=dim ** -0.5)
+            self.beta = nn.Parameter(torch.tensor(1.0))
+
         # logits-as-prior bias weight, and the single learnable dustbin score
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.bin_score = nn.Parameter(torch.tensor(1.0))
-        self.register_buffer('temperature', torch.tensor(dim ** 0.5))
+        # learnable Sinkhorn temperature (log-space), initialised to sqrt(dim)
+        self.log_temperature = nn.Parameter(torch.tensor(dim ** 0.5).log())
 
     def forward(self, outputs):
         emb = outputs['pred_embed']       # [B, N, hidden_dim]
@@ -136,15 +148,23 @@ class OTAssignmentHead(nn.Module):
 
         tokens = torch.cat([emb, boxes, logits], dim=-1)
         f = self.input_norm(self.input_proj(tokens))
-        if self.use_box_pos:
-            f = f + self.box_pos(boxes)
+        pe = self.box_pos(boxes) if self.use_box_pos else None
+        if pe is not None:
+            f = f + pe
 
         g = self.encoder(f)               # [B, N, dim]
 
         # affinity of each query to each class prototype, plus RT-DETR's own
         # logits as a unary prior so the head *corrects* rather than relearns.
-        scores = torch.matmul(g, self.class_proto.t()) / self.temperature \
+        temperature = self.log_temperature.exp()
+        scores = torch.matmul(g, self.class_proto.t()) / temperature \
             + self.alpha * logits          # [B, N, C]
+
+        # explicit geometry-vs-class term: how well each box's position matches the
+        # learned canonical location of every tooth class.
+        if self.use_pos_proto:
+            scores = scores + self.beta \
+                * torch.matmul(pe, self.pos_proto.t()) / temperature
 
         # Sinkhorn runs in fp32 regardless of AMP autocast for stability.
         log_P = log_optimal_transport(

@@ -27,18 +27,26 @@ class RTDETRAssignmentPostProcessor(nn.Module):
     def __init__(self,
                  num_classes=32,
                  score_threshold=0.0,
+                 match_threshold=0.0,
+                 use_dustbin=True,
                  use_hungarian=True,
                  remap_mscoco_category=False) -> None:
         super().__init__()
         self.num_classes = int(num_classes)
         self.score_threshold = score_threshold
+        # minimum assignment probability P[q, c] for a (query, class) pair to survive
+        self.match_threshold = match_threshold
+        # use the trained dustbin to allow absent teeth: keep a pair only if the OT
+        # plan prefers the real cell over BOTH dustbins (query-dropped, class-absent)
+        self.use_dustbin = use_dustbin
         self.use_hungarian = use_hungarian
         self.remap_mscoco_category = remap_mscoco_category
         self.deploy_mode = False
 
     def extra_repr(self) -> str:
         return f'num_classes={self.num_classes}, use_hungarian={self.use_hungarian}, ' \
-               f'score_threshold={self.score_threshold}'
+               f'use_dustbin={self.use_dustbin}, score_threshold={self.score_threshold}, ' \
+               f'match_threshold={self.match_threshold}'
 
     @torch.no_grad()
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
@@ -47,6 +55,7 @@ class RTDETRAssignmentPostProcessor(nn.Module):
         log_P = outputs['assignment_log']          # [B, N+1, C+1]
         boxes = outputs['pred_boxes']              # [B, N, 4] cxcywh normalized
         B, N, C = log_P.shape[0], log_P.shape[1] - 1, log_P.shape[2] - 1
+        db_col, db_row = C, N                       # dustbin indices
 
         # assignment probabilities over real (query, class) pairs
         P = log_P[:, :N, :C].exp()                 # [B, N, C]
@@ -73,7 +82,18 @@ class RTDETRAssignmentPostProcessor(nn.Module):
             scores = Pb[q_idx, c_idx]
             sel_boxes = bbox_xyxy[b][q_idx]
 
-            keep = scores > self.score_threshold
+            keep = (scores > self.score_threshold) & (scores >= self.match_threshold)
+            if self.use_dustbin:
+                # drop a pair unless the OT plan prefers the real cell over being
+                # dropped (query -> dustbin column) AND over the tooth being absent
+                # (class -> dustbin row). Without this the matching is forced to
+                # assign every class, so missing teeth become guaranteed false
+                # positives. Compared in log space (the trained dustbin scores).
+                lp = log_P[b]                                  # [N+1, C+1]
+                real = lp[q_idx, c_idx]
+                beats_col = real >= lp[q_idx, db_col]
+                beats_row = real >= lp[db_row, c_idx]
+                keep = keep & beats_col & beats_row
             lab, box, sco = c_idx[keep], sel_boxes[keep], scores[keep]
 
             if self.deploy_mode:

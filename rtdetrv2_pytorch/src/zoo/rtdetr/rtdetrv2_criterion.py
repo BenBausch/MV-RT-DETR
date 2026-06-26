@@ -167,6 +167,18 @@ class RTDETRCriterionv2(nn.Module):
             + negc_sum / max(n_negc, 1)
         return {'loss_assignment': loss}
 
+    def loss_proto_div(self, outputs, targets, indices, num_boxes):
+        """Surface the assignment head's prototype anti-collapse penalty.
+
+        The head computes the angular repulsion over its per-class prototypes and
+        stores it in `outputs['proto_div']`; here it is exposed as a weighted loss.
+        Graceful no-op when the head did not produce one (e.g. single prototype).
+        """
+        div = outputs.get('proto_div', None)
+        if div is None:
+            div = outputs['pred_boxes'].new_zeros(())
+        return {'loss_proto_div': div}
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -185,6 +197,7 @@ class RTDETRCriterionv2(nn.Module):
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
             'assignment': self.loss_assignment,
+            'proto_div': self.loss_proto_div,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -224,7 +237,7 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
-                    if loss == 'assignment':
+                    if loss in ('assignment', 'proto_div'):
                         continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
@@ -239,7 +252,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss == 'assignment':
+                    if loss in ('assignment', 'proto_div'):
                         continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -264,7 +277,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss == 'assignment':
+                    if loss in ('assignment', 'proto_div'):
                         continue  # assignment head only runs on the final layer
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)

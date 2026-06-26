@@ -98,10 +98,19 @@ class OTAssignmentHead(nn.Module):
                  dropout=0.0,
                  sinkhorn_iters=50,
                  use_box_pos=True,
-                 use_pos_proto=True):
+                 use_pos_proto=True,
+                 num_prototypes=1,
+                 proto_repulsion=0.0,
+                 proto_margin=0.5):
         super().__init__()
         self.num_classes = num_classes
         self.sinkhorn_iters = sinkhorn_iters
+        # multiple appearance prototypes per class let one tooth type cover its
+        # diverse looks; their per-class similarities are reduced with a soft-max
+        # (logsumexp) so a query matches its best-fitting mode.
+        self.num_prototypes = num_prototypes
+        self.proto_repulsion = proto_repulsion
+        self.proto_margin = proto_margin
 
         in_dim = hidden_dim + 4 + num_classes
         self.input_proj = nn.Linear(in_dim, dim)
@@ -121,8 +130,8 @@ class OTAssignmentHead(nn.Module):
         self.encoder = nn.TransformerEncoder(
             encoder_layer, num_layers, enable_nested_tensor=False)
 
-        # one learnable prototype vector per class
-        self.class_proto = nn.Parameter(torch.empty(num_classes, dim))
+        # num_prototypes learnable prototype vectors per class
+        self.class_proto = nn.Parameter(torch.empty(num_classes * num_prototypes, dim))
         nn.init.normal_(self.class_proto, std=dim ** -0.5)
 
         # explicit per-class spatial prior: a learnable location prototype scored
@@ -131,7 +140,7 @@ class OTAssignmentHead(nn.Module):
         # position). Requires the box positional encoding to be enabled.
         self.use_pos_proto = use_pos_proto and use_box_pos
         if self.use_pos_proto:
-            self.pos_proto = nn.Parameter(torch.empty(num_classes, dim))
+            self.pos_proto = nn.Parameter(torch.empty(num_classes * num_prototypes, dim))
             nn.init.normal_(self.pos_proto, std=dim ** -0.5)
             self.beta = nn.Parameter(torch.tensor(1.0))
 
@@ -140,6 +149,22 @@ class OTAssignmentHead(nn.Module):
         self.bin_score = nn.Parameter(torch.tensor(1.0))
         # learnable Sinkhorn temperature (log-space), initialised to sqrt(dim)
         self.log_temperature = nn.Parameter(torch.tensor(dim ** 0.5).log())
+
+    def _proto_repulsion(self, proto):
+        """Angular anti-collapse penalty over the per-class prototype group.
+
+        Normalizes each prototype, then hinge-penalizes any intra-class prototype
+        pair whose cosine similarity exceeds ``1 - proto_margin``, so the p
+        prototypes of a class are pushed apart only while they are too similar.
+        """
+        p = self.num_prototypes
+        if p == 1 or self.proto_repulsion == 0:
+            return proto.new_zeros(())
+        pn = F.normalize(proto.view(self.num_classes, p, -1), dim=-1)
+        gram = torch.matmul(pn, pn.transpose(1, 2))            # [K, p, p] cosine sims
+        off = gram - torch.eye(p, device=proto.device)         # zero the diagonal
+        pen = (off - (1.0 - self.proto_margin)).clamp(min=0.0)
+        return (pen ** 2).sum() / (self.num_classes * p * (p - 1))
 
     def forward(self, outputs):
         emb = outputs['pred_embed']       # [B, N, hidden_dim]
@@ -153,22 +178,35 @@ class OTAssignmentHead(nn.Module):
             f = f + pe
 
         g = self.encoder(f)               # [B, N, dim]
+        B, N = g.shape[:2]
+        K, P = self.num_classes, self.num_prototypes
 
         # affinity of each query to each class prototype, plus RT-DETR's own
         # logits as a unary prior so the head *corrects* rather than relearns.
+        # the P prototypes per class are reduced with a soft-max (logsumexp) so a
+        # query matches its best-fitting appearance mode (logsumexp over a single
+        # prototype is the identity, recovering the one-prototype-per-class head).
         temperature = self.log_temperature.exp()
-        scores = torch.matmul(g, self.class_proto.t()) / temperature \
+        sim = torch.matmul(g, self.class_proto.t()).view(B, N, K, P)
+        scores = torch.logsumexp(sim / temperature, dim=-1) \
             + self.alpha * logits          # [B, N, C]
 
         # explicit geometry-vs-class term: how well each box's position matches the
         # learned canonical location of every tooth class.
         if self.use_pos_proto:
-            scores = scores + self.beta \
-                * torch.matmul(pe, self.pos_proto.t()) / temperature
+            psim = torch.matmul(pe, self.pos_proto.t()).view(B, N, K, P)
+            scores = scores + self.beta * torch.logsumexp(psim / temperature, dim=-1)
 
         # Sinkhorn runs in fp32 regardless of AMP autocast for stability.
         log_P = log_optimal_transport(
             scores.float(), self.bin_score.float(), self.sinkhorn_iters)
 
         outputs['assignment_log'] = log_P          # [B, N+1, C+1]
+
+        # anti-collapse penalty over the appearance (and spatial) prototypes; the
+        # criterion reads this scalar as `loss_proto_div`.
+        proto_div = self._proto_repulsion(self.class_proto)
+        if self.use_pos_proto:
+            proto_div = proto_div + self._proto_repulsion(self.pos_proto)
+        outputs['proto_div'] = proto_div
         return outputs

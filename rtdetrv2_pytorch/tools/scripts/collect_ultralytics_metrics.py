@@ -25,7 +25,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+# entry script sits two levels under the repo root (tools/scripts/); add the repo
+# root for `src` and tools/visualization for the shared visualizer helpers.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, '..', '..'))
+sys.path.insert(0, os.path.join(_HERE, '..', 'visualization'))
 
 import torch
 import torchvision.transforms as T
@@ -139,16 +143,18 @@ def eval_one(config: str, split: str, device: str, visualize: bool = False) -> d
     out_dir = Path(base['output_dir'])
     ckpt = find_checkpoint(out_dir)
 
-    val_ann = base['val_dataloader']['dataset']['ann_file']
-    ann = val_ann.replace('instances_val', f'instances_{split}')
-    print(f'[{out_dir.name}] ckpt={ckpt.name} split={split} ann={Path(ann).name}')
+    # native OrthoDetection loader: select the split by swapping the YOLO split
+    # file (val.txt -> {split}.txt), mirroring tools/scripts/eval.py.
+    val_split = base['val_dataloader']['dataset']['split_file']
+    split_file = val_split.replace('val.txt', f'{split}.txt')
+    print(f'[{out_dir.name}] ckpt={ckpt.name} split={split} file={Path(split_file).name}')
 
     cfg = YAMLConfig(
         config,
         resume=str(ckpt),
         tuning=None,                                    # skip pretrained re-download
         device=device,
-        val_dataloader={'dataset': {'ann_file': ann}},
+        val_dataloader={'dataset': {'split_file': split_file}},
     )
     solver = DetSolver(cfg)
     solver.eval()                                       # builds model+loader, loads ckpt
@@ -158,41 +164,54 @@ def eval_one(config: str, split: str, device: str, visualize: bool = False) -> d
     stats, _ = evaluate(module, solver.criterion, solver.postprocessor,
                         solver.val_dataloader, solver.evaluator, solver.device,
                         ul_names=names)
-    ul = stats.get('ultralytics', {}) or {}
+    # ortho runs report per-tooth P/R/F1 (+ recall-loss decomposition and the
+    # one-box-per-class duplicate rate); COCO/Ultralytics mAP was dropped for them.
+    pt = stats.get('per_tooth', {}) or {}
+    nm = names or {}
 
-    nm = ul.get('names', {}) or {}
     per_class = {}
-    for cid, d in (ul.get('per_class') or {}).items():
+    for cid, d in (pt.get('per_class') or {}).items():
         per_class[str(nm.get(cid, cid))] = {
-            'n': int(d['n']),
+            'support': int(d['support']),
             'precision': round(float(d['p']), 4),
             'recall': round(float(d['r']), 4),
-            'mAP50': round(float(d['ap50']), 4),
-            'mAP50_95': round(float(d['ap']), 4),
+            'f1': round(float(d['f1']), 4),
+            'correct': int(d['correct']), 'misloc': int(d['misloc']),
+            'miscls': int(d['miscls']), 'missed': int(d['missed']), 'dup': int(d['dup']),
         }
 
-    confusion = ul.get('confusion')
+    confusion = pt.get('confusion')
     nc = len(confusion) if confusion is not None else 0
+    support = int(pt.get('tp', 0)) + int(pt.get('fn', 0))
 
     # write per-run confusion CSV + heatmap PNG into the run's output dir
     if confusion is not None:
-        write_confusion(confusion, ul.get('names', {}), out_dir)
+        write_confusion(confusion, nm, out_dir)
 
     result = {
         'config': config,
         'checkpoint': str(ckpt),
         'split': split,
-        'images': int(ul.get('seen', 0)),
-        'instances': int(ul.get('instances', 0)),
+        'images': int(pt.get('n_imgs', 0)),
+        'instances': support,
         'overall': {
-            'mAP50': round(float(ul.get('map50', 0.0)), 4),
-            'mAP50_95': round(float(ul.get('map', 0.0)), 4),
-            'precision': round(float(ul.get('mp', 0.0)), 4),
-            'recall': round(float(ul.get('mr', 0.0)), 4),
-            'mean_iou': round(float(ul.get('mean_iou', 0.0)), 4),
+            'micro_p': round(float(pt.get('micro_p', 0.0)), 4),
+            'micro_r': round(float(pt.get('micro_r', 0.0)), 4),
+            'micro_f1': round(float(pt.get('micro_f1', 0.0)), 4),
+            'macro_f1': round(float(pt.get('macro_f1', 0.0)), 4),
+            'weighted_f1': round(float(pt.get('weighted_f1', 0.0)), 4),
+        },
+        'recall_loss': {
+            'support': support,
+            'correct': int(pt.get('correct', 0)), 'misloc': int(pt.get('misloc', 0)),
+            'miscls': int(pt.get('miscls', 0)), 'missed': int(pt.get('missed', 0)),
+        },
+        'duplicate_class': {
+            'imgs_with_dup': int(pt.get('imgs_with_dup', 0)),
+            'n_imgs': int(pt.get('n_imgs', 0)),
+            'surplus_boxes': int(pt.get('total_dups', 0)),
         },
         'per_class': per_class,
-        'coco_eval_bbox': [round(float(x), 4) for x in stats.get('coco_eval_bbox', [])],
     }
     if confusion is not None:
         result['confusion_labels'] = [str(nm.get(i, i)) for i in range(nc)]
@@ -268,13 +287,16 @@ def main():
         yaml.safe_dump({'split': args.split, 'runs': runs}, f, sort_keys=False, default_flow_style=None)
     print(f'\nwrote {out}')
 
-    # compact comparison table
-    print(f"\n{'run':38}{'mAP50':>8}{'mAP50-95':>10}{'P':>8}{'R':>8}{'meanIoU':>9}")
+    # compact comparison table (per-tooth metrics)
+    print(f"\n{'run':38}{'microP':>8}{'microR':>8}{'microF1':>9}"
+          f"{'macroF1':>9}{'wF1':>8}{'dupImgs':>9}{'surplus':>9}")
     for name, r in runs.items():
         o = r.get('overall')
         if o:
-            print(f"{name:38}{o['mAP50']:>8.3f}{o['mAP50_95']:>10.3f}"
-                  f"{o['precision']:>8.3f}{o['recall']:>8.3f}{o['mean_iou']:>9.3f}")
+            dc = r.get('duplicate_class', {})
+            print(f"{name:38}{o['micro_p']:>8.3f}{o['micro_r']:>8.3f}{o['micro_f1']:>9.3f}"
+                  f"{o['macro_f1']:>9.3f}{o['weighted_f1']:>8.3f}"
+                  f"{dc.get('imgs_with_dup', 0):>9d}{dc.get('surplus_boxes', 0):>9d}")
         else:
             print(f"{name:38}{'FAILED':>8}")
 

@@ -1,0 +1,84 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho.yml',
+]
+
+# ABLATION: identical to rtdetrv2_r50vd_ortho_assign.yml but WITHOUT the orientation-
+# encoding 4th input channel (3-channel RGB input, no OrientationChannel op). The
+# FDI-aware horizontal flip is kept. Trained for 300 epochs. Isolates the
+# contribution of the orientation channel to the OT-assignment model.
+#
+# NOTE: schedule is kept identical to the 120-epoch assign config (LR milestone at
+# epoch 100, photometric aug stops at epoch 110) per "exactly the same" -- only the
+# channel and epoch count differ.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_assign_no_orient
+
+epoches: 300
+
+wandb:
+  name: r50vd_ortho_assign_no_orient
+  tags: [r50vd, ortho, per-tooth, 32cls, ot-assign, no_orient, fdi_flip, res1024, ep300]
+
+# attach the assignment head to the RT-DETR model (4th component, after decoder)
+RTDETR:
+  assignment_head: OTAssignmentHead
+
+OTAssignmentHead:
+  hidden_dim: 256        # must match decoder hidden_dim
+  dim: 256               # working dim of the relational encoder
+  num_layers: 3          # keep the transformer small
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  sinkhorn_iters: 50     # backprops through all iters; 20-30 usually suffices
+  use_box_pos: True
+  use_pos_proto: True    # explicit per-class spatial prior (geometry-vs-class cost)
+  num_prototypes: 5     # p appearance modes per tooth (1 = single-prototype head)
+  proto_repulsion: 0.1   # anti-collapse weight on intra-class prototypes (0 = off)
+  proto_margin: 0.5      # only repel prototype pairs with cosine > 1 - margin
+
+# swap the post-processor so eval enforces one-box-per-class
+postprocessor: RTDETRAssignmentPostProcessor
+RTDETRAssignmentPostProcessor:
+  use_hungarian: True
+  use_dustbin: True      # respect the trained dustbin -> allow absent/missing teeth
+  score_threshold: 0.0
+  match_threshold: 0.0   # extra floor on assignment prob P[q,c] (0 = rely on dustbin)
+
+# add the assignment loss term
+RTDETRCriterionv2:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_assignment: 2, loss_proto_div: 1}
+  losses: ['vfl', 'boxes', 'assignment', 'proto_div']
+
+
+# ---- recipe: 1024 res + FDI flip, NO orientation-encoding channel (3-channel RGB) ----
+eval_spatial_size: [1024, 1024]      # must match the input size below
+
+PResNet:
+  in_channels: 3                     # RGB only (orientation channel removed)
+
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlipFDI, p: 0.5, num_classes: 32}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

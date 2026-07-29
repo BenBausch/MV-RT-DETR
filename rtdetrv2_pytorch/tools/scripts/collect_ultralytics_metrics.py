@@ -198,7 +198,11 @@ def eval_one(config: str, split: str, device: str, visualize: bool = False) -> d
             'micro_p': round(float(pt.get('micro_p', 0.0)), 4),
             'micro_r': round(float(pt.get('micro_r', 0.0)), 4),
             'micro_f1': round(float(pt.get('micro_f1', 0.0)), 4),
+            'macro_p': round(float(pt.get('macro_p', 0.0)), 4),
+            'macro_r': round(float(pt.get('macro_r', 0.0)), 4),
             'macro_f1': round(float(pt.get('macro_f1', 0.0)), 4),
+            'weighted_p': round(float(pt.get('weighted_p', 0.0)), 4),
+            'weighted_r': round(float(pt.get('weighted_r', 0.0)), 4),
             'weighted_f1': round(float(pt.get('weighted_f1', 0.0)), 4),
         },
         'recall_loss': {

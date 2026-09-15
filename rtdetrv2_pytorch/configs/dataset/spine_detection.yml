@@ -1,0 +1,59 @@
+
+task: detection
+
+# COCO eval removed, as for the ortho runs: each vertebra level occurs at most once
+# per image, so per-class P/R/F1 (src/misc/per_tooth_eval.py) is the validation
+# metric and best.pth is selected on val micro-F1. The test split is evaluated once
+# at the end of training (det_solver._test_eval).
+per_tooth_eval:
+  score_thr: 0.5
+  iou_thr: 0.5
+  # test_split_file: ~   # defaults to <val split dir>/test.txt
+
+# 5 lumbar bodies (L1..L5) + the synthesized sacral base (S1). category_id == the
+# 0-based label. num_classes is shared into SpineDetection, pinning categories to
+# 0..5 across all splits. Set to 5 together with `include_s1: False` below to train
+# on the lumbar levels only (S1's box height is derived, not annotated).
+num_classes: 6
+
+# SpineDetection reads the BUU-LSPINE release directly: AP/ and LA/ hold <stem>.jpg
+# next to <stem>.csv (edge-line coordinates); split files list one image path per
+# line, relative to this root. Generate them with:
+#   tools/scripts/make_spine_splits.py --root <root> --ratios 0.8 0.1 0.1 --seed 0
+_spine_root: &spine_root /mnt/data/abi/datasets/BUU-LSPINE_400
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: SpineDetection
+    img_folder: *spine_root
+    split_file: /mnt/data/abi/datasets/BUU-LSPINE_400/train.txt
+    views: ['AP', 'LA']     # drop one to train a single-view model
+    include_s1: True
+    s1_height_scale: 1.0    # S1 box height as a multiple of the L5 body height
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 4
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: SpineDetection
+    img_folder: *spine_root
+    split_file: /mnt/data/abi/datasets/BUU-LSPINE_400/val.txt
+    views: ['AP', 'LA']
+    include_s1: True
+    s1_height_scale: 1.0
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 4
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

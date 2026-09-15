@@ -1,0 +1,84 @@
+__include__: [
+  '../dataset/spine_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# BASELINE: per-level lumbar vertebra detection (L1..L5 + S1) on BUU-LSPINE,
+# R50 backbone, both views (AP + LA) in one model. Same recipe as the ortho
+# baseline -- COCO-pretrained finetune, 1024 res, photometric aug -- but WITHOUT
+# the OT assignment head. This is the reference point for the assignment ablation.
+#
+# No horizontal flip: it is label-preserving for L1..L5 (the levels are stacked
+# vertically), but the release normalizes every lateral image to LEFT-lateral, so
+# mirroring an LA image would produce a view that never occurs at test time.
+
+output_dir: ./output/rtdetrv2_r50vd_spine_base
+checkpoint_freq: 10
+
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+eval_spatial_size: [1024, 1024]
+
+use_wandb: True
+wandb:
+  project: rtdetr-spine
+  name: r50vd_spine_base
+  mode: online
+  tags: [r50vd, spine, buu-lspine, per-level, 6cls, base, ap+la, res1024]
+
+
+# ---- training schedule (640 train imgs, bs 8 -> ~80 iters/epoch) ----
+# warmup_duration / ema.warmups are in ITERATIONS; the COCO default of 2000 would
+# be ~25 epochs of warmup here. lr_scheduler.milestones are in EPOCHS.
+epoches: 120
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 200
+ema:
+  warmups: 200
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

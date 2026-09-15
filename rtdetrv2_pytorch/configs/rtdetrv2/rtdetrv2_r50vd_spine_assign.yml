@@ -1,0 +1,57 @@
+__include__: [
+  './rtdetrv2_r50vd_spine_base.yml',
+]
+
+# EXPERIMENT: per-level lumbar detection (L1..L5 + S1) with the learnable OT
+# assignment head. Everything except the head is inherited from the baseline
+# (same backbone, schedule, resolution and augmentation), so base -> assign
+# isolates the head's effect. Adds:
+#   - OTAssignmentHead              (3-layer relational encoder + Sinkhorn matching)
+#   - loss_assignment               (SuperGlue-style matching NLL)
+#   - RTDETRAssignmentPostProcessor (unique-per-class detections at inference)
+#
+# The constraint is exact here: a lumbar spine has exactly one L1..L5, and S1 is
+# annotated only in the LA view -- absence is handled by the dustbin.
+
+output_dir: ./output/rtdetrv2_r50vd_spine_assign
+
+wandb:
+  name: r50vd_spine_perlevel_assign
+  tags: [r50vd, spine, buu-lspine, per-level, 6cls, ot-assign, ap+la, res1024]
+
+# attach the assignment head to the RT-DETR model (4th component, after decoder)
+RTDETR:
+  assignment_head: OTAssignmentHead
+
+OTAssignmentHead:
+  hidden_dim: 256        # must match decoder hidden_dim
+  dim: 256               # working dim of the relational encoder
+  num_layers: 3          # keep the transformer small
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  sinkhorn_iters: 50     # backprops through all iters; 20-30 usually suffices
+  use_box_pos: True
+  use_pos_proto: True    # explicit per-class spatial prior (geometry-vs-class cost)
+  num_prototypes: 3      # a level looks different in AP vs LA, plus degeneration
+  proto_repulsion: 0.1   # anti-collapse weight on intra-class prototypes (0 = off)
+  proto_margin: 0.5      # only repel prototype pairs with cosine > 1 - margin
+
+# swap the post-processor so eval enforces one-box-per-class
+postprocessor: RTDETRAssignmentPostProcessor
+RTDETRAssignmentPostProcessor:
+  use_hungarian: True
+  use_dustbin: True      # respect the trained dustbin -> allows the absent S1 in AP
+  score_threshold: 0.0
+  match_threshold: 0.0   # extra floor on assignment prob P[q,c] (0 = rely on dustbin)
+
+# NOTE: the inherited per_tooth_eval.score_thr of 0.5 is the ortho ablation's
+# operating point, kept here so base and assign are compared at the same threshold.
+# On the ortho runs it turned out to be badly calibrated for Sinkhorn scores and
+# cost the assign model a large slice of recall; re-check the threshold sweep before
+# reading anything into an assign-vs-base recall gap.
+
+# add the assignment loss term
+RTDETRCriterionv2:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_assignment: 2, loss_proto_div: 1}
+  losses: ['vfl', 'boxes', 'assignment', 'proto_div']

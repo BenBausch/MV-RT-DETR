@@ -1,0 +1,46 @@
+[project]
+name = "mv-rt-detr"
+version = "0.1.0"
+description = "Multi-view RT-DETRv2 for orthopantomogram / spine / chest X-ray detection"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # core training stack
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "numpy==2.4.6",
+    "scipy==1.17.1",
+    "pillow==12.2.0",
+    "pyyaml==6.0.3",
+    # detection / evaluation
+    "faster-coco-eval==1.7.2",
+    "pycocotools==2.0.11",
+    "ultralytics==8.4.61",
+    # logging & plotting
+    "tensorboard==2.20.0",
+    "wandb==0.27.1",
+    "matplotlib==3.10.9",
+    "opencv-python==4.13.0.92",
+    # export
+    "onnx==1.21.0",
+    "onnxruntime-gpu==1.26.0",
+]
+
+[project.optional-dependencies]
+# extra backbones (src/nn/backbone/timm_model.py)
+timm = ["timm"]
+# onnx graph surgery / TensorRT export + benchmark
+deploy = ["onnxsim", "onnx-graphsurgeon", "tensorrt"]
+# rich console output for the distributed print patch (src/misc/dist_utils.py)
+rich = ["rich"]
+
+[tool.uv]
+# torch/torchvision wheels come from the cu128 index, everything else from PyPI
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }

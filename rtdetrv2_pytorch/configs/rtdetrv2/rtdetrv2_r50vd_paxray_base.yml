@@ -1,0 +1,93 @@
+__include__: [
+  '../dataset/paxray_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+# BASELINE: per-structure chest anatomy detection on PAX-Ray++ frontal DRRs --
+# 24 vertebrae (C1..C7, T1..T12, L1..L5) + 46 side-specific ribs = 70 classes,
+# each occurring at most once per image. R50 backbone, COCO-pretrained finetune.
+# This is the reference point for the OT assignment ablation; the assign config
+# includes this file and adds ONLY the head, so base -> assign isolates it.
+#
+# Resolution is the DRRs' native 512x512 -- upscaling adds cost without adding
+# information (the release ships nothing larger).
+#
+# No horizontal flip: the label space is side-specific ("posterior 5th rib right"
+# vs "... left"), so a mirrored image carries systematically wrong labels. Also no
+# RandomZoomOut / RandomIoUCrop from the default dataloader: both destroy the
+# global thoracic layout, which is the cue that identifies a rib or vertebra level
+# (and the signal the assignment head's positional prototypes learn).
+
+output_dir: ./output/rtdetrv2_r50vd_paxray_base
+checkpoint_freq: 10
+
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+eval_spatial_size: [512, 512]
+
+use_wandb: True
+wandb:
+  project: rtdetr-paxray
+  name: r50vd_paxray_frontal_base
+  mode: online
+  tags: [r50vd, paxray, frontal, vertebrae+ribs, 70cls, base, res512]
+
+
+# ---- training schedule (5,532 frontal train imgs, bs 32 -> ~173 iters/epoch) ----
+# warmup_duration / ema.warmups are in ITERATIONS (the COCO default of 2000 would be
+# ~12 epochs of warmup here); lr_scheduler.milestones are in EPOCHS.
+# LR is the RT-DETR default scaled linearly for the doubled batch (1e-4 @ bs16).
+# The LR drop and the photometric-aug stop sit at the same fraction of training as in
+# the original 48-epoch schedule (40/48 and 44/48).
+epoches: 100
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00002
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_warmup_scheduler:
+  warmup_duration: 500
+ema:
+  warmups: 500
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [83]
+  gamma: 0.1
+
+
+train_dataloader:
+  total_batch_size: 32
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [512, 512]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 92
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [512, 512]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

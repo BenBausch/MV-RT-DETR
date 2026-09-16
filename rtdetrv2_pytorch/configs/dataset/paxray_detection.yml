@@ -1,0 +1,57 @@
+
+task: detection
+
+# COCO eval removed, as for the ortho/spine runs: every selected class occurs at most
+# once per image, so per-class P/R/F1 (src/misc/per_tooth_eval.py) is the validation
+# metric and best.pth is selected on val micro-F1. The test split is evaluated once at
+# the end of training (det_solver._test_eval) from the checkpoint that won on val.
+per_tooth_eval:
+  score_thr: 0.5
+  iou_thr: 0.5
+  # PaxrayDetection takes a COCO json as its `split_file`, so point the automatic
+  # test pass at the test json explicitly (the default guess is `test.txt`).
+  test_split_file: /mnt/data/abi/datasets/PAX-RayPlusPlus/annotations/test.json
+
+# 24 vertebrae (C1..C7, T1..T12, L1..L5) + 46 side-specific ribs. Shared into
+# PaxrayDetection, which asserts it against the selected class_groups, and into
+# OTAssignmentHead. Changing class_groups without changing this raises.
+num_classes: 70
+
+# The splits were built by tools/paxray-plusplus/split_train_val.py: the shipped
+# paxray_test.json is the test set untouched, and train/val are a patient-disjoint
+# cut of paxray_train_val.json (see docs + tools/paxray-plusplus/).
+_paxray_images: &paxray_images /mnt/data/abi/datasets/PAX-RayPlusPlus/images_patlas
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: PaxrayDetection
+    img_folder: *paxray_images
+    split_file: /mnt/data/abi/datasets/PAX-RayPlusPlus/annotations/train.json
+    views: ['frontal']            # add 'lateral' to train both views in one model
+    class_groups: ['vertebrae', 'ribs']
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 8
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: PaxrayDetection
+    img_folder: *paxray_images
+    split_file: /mnt/data/abi/datasets/PAX-RayPlusPlus/annotations/val.json
+    views: ['frontal']
+    class_groups: ['vertebrae', 'ribs']
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 8
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

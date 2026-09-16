@@ -1,0 +1,64 @@
+__include__: [
+  './rtdetrv2_r50vd_paxray_base.yml',
+]
+
+# EXPERIMENT: the same 70-class PAX-Ray++ frontal detector WITH the learnable OT
+# assignment head. Everything except the head is inherited from the baseline (same
+# backbone, schedule, resolution, augmentation, splits), so base -> assign isolates
+# the head's effect. Adds:
+#   - OTAssignmentHead              (relational encoder + Sinkhorn matching)
+#   - loss_assignment               (SuperGlue-style matching NLL)
+#   - RTDETRAssignmentPostProcessor (unique-per-class detections at inference)
+#
+# This dataset is the cleanest test of the head so far. The constraint it encodes --
+# at most one instance per class, in a near-rigid spatial arrangement -- is exactly
+# true here: a thorax has one T5 and one "posterior 5th rib left", always in the same
+# relative position. Unlike the ortho/spine sets, presence also varies a lot per class
+# (T1..T11 in 100% of frontal images, vertebrae C2 in 0.5%, ribs 90-99%), so the
+# dustbin is genuinely exercised rather than being a formality.
+
+output_dir: ./output/rtdetrv2_r50vd_paxray_assign
+
+wandb:
+  name: r50vd_paxray_frontal_assign
+  tags: [r50vd, paxray, frontal, vertebrae+ribs, 70cls, ot-assign, res512]
+
+# attach the assignment head to the RT-DETR model (4th component, after decoder)
+RTDETR:
+  assignment_head: OTAssignmentHead
+
+OTAssignmentHead:
+  hidden_dim: 256        # must match decoder hidden_dim
+  dim: 256               # working dim of the relational encoder
+  num_layers: 3          # keep the transformer small
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  sinkhorn_iters: 50     # backprops through all iters; 20-30 usually suffices
+  use_box_pos: True
+  use_pos_proto: True    # explicit per-class spatial prior (geometry-vs-class cost)
+  # 10 appearance modes per class (70 x 10 = 700 prototype vectors), reduced per class
+  # with logsumexp so a query matches its best-fitting mode. proto_repulsion below keeps
+  # them from collapsing onto each other.
+  num_prototypes: 10
+  proto_repulsion: 0.1   # anti-collapse weight on intra-class prototypes (0 = off)
+  proto_margin: 0.5      # only repel prototype pairs with cosine > 1 - margin
+
+# swap the post-processor so eval enforces one-box-per-class
+postprocessor: RTDETRAssignmentPostProcessor
+RTDETRAssignmentPostProcessor:
+  use_hungarian: True
+  use_dustbin: True      # respect the trained dustbin -> allows genuinely absent classes
+  score_threshold: 0.0
+  match_threshold: 0.0   # extra floor on assignment prob P[q,c] (0 = rely on dustbin)
+
+# NOTE: per_tooth_eval.score_thr is inherited as 0.5 so base and assign are read at
+# the SAME operating point. On the ortho runs 0.5 turned out to be badly calibrated
+# for Sinkhorn scores and cost assign a large slice of recall -- tools/scripts/
+# per_tooth_metrics.py sweeps the threshold, so run that before concluding anything
+# about an assign-vs-base recall gap.
+
+# add the assignment loss term
+RTDETRCriterionv2:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_assignment: 2, loss_proto_div: 1}
+  losses: ['vfl', 'boxes', 'assignment', 'proto_div']

@@ -15,14 +15,14 @@ num_classes: 32
 
 # OrthoDetection reads the YOLO dataset directly: images + sibling .txt labels
 # live under this root; split files list one image path per line.
-_ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects
+_ortho_root: &ortho_root /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_301_montages
 
 train_dataloader:
   type: DataLoader
   dataset:
     type: OrthoDetection
     img_folder: *ortho_root
-    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects/train.txt
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_301_montages/train.txt
     transforms:
       type: Compose
       ops: ~
@@ -37,7 +37,7 @@ val_dataloader:
   dataset:
     type: OrthoDetection
     img_folder: *ortho_root
-    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects/val.txt
+    split_file: /mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_301_montages/val.txt
     transforms:
       type: Compose
       ops: ~

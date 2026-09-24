@@ -1,0 +1,41 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho_base.yml',
+]
+
+# Baseline arm for the OrthoTracked_301_montages comparison against
+# rtdetrv2_r50vd_ortho_assign_p20.yml. Everything from rtdetrv2_r50vd_ortho_base.yml
+# (no OT assignment head, no FDI flip, no orientation channel, 3ch input,
+# COCO-pretrained finetune, 1024 res, 120 epochs) with the p20 run's recipe applied
+# so the two are comparable: same batch size, same update count, same LR, same EMA
+# horizon.
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_base_bs32
+
+wandb:
+  name: r50vd_ortho_base_bs32_301
+  tags: [r50vd, ortho, per-tooth, 32cls, base, no_flip, no_orientation, res1024, bs32, ortho301]
+
+# ---- matched to rtdetrv2_r50vd_ortho_assign_p20.yml ----
+# 37 iters/epoch x 120 = 4,440 updates (vs 151/epoch at the parent's bs8).
+train_dataloader:
+  total_batch_size: 32
+val_dataloader:
+  total_batch_size: 32
+
+# ema_decay 0.9999 averages over ~1/(1-decay) = 10,000 updates -- longer than this
+# whole run, so the EMA (which is what val / best.pth / test all evaluate, see
+# det_solver.py:84) would never leave the early-training weights. 0.9996 = ~2,500
+# updates, matching the bs8 runs' ~66-epoch horizon.
+ema:
+  decay: 0.9996
+
+# sqrt batch scaling (x2 for 4x batch), same as the p20 arm.
+optimizer:
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00002
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0002

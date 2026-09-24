@@ -1,0 +1,16 @@
+__include__: [
+  './rtdetrv2_r50vd_paxray_assign.yml',
+]
+
+# Prototype-count ablation: identical to rtdetrv2_r50vd_paxray_assign.yml (10 prototypes)
+# except for num_prototypes. With a single prototype per class the intra-class
+# proto_repulsion term has no pairs to act on, so it is inert here.
+
+output_dir: ./output/rtdetrv2_r50vd_paxray_assign_p1
+
+wandb:
+  name: r50vd_paxray_frontal_assign_p1
+  tags: [r50vd, paxray, frontal, vertebrae+ribs, 70cls, ot-assign, res512, proto1]
+
+OTAssignmentHead:
+  num_prototypes: 1

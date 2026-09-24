@@ -1,0 +1,15 @@
+__include__: [
+  './rtdetrv2_r50vd_paxray_assign.yml',
+]
+
+# Prototype-count ablation: identical to rtdetrv2_r50vd_paxray_assign.yml (10 prototypes)
+# except for num_prototypes (70 classes x 20 = 1,400 prototype vectors).
+
+output_dir: ./output/rtdetrv2_r50vd_paxray_assign_p20
+
+wandb:
+  name: r50vd_paxray_frontal_assign_p20
+  tags: [r50vd, paxray, frontal, vertebrae+ribs, 70cls, ot-assign, res512, proto20]
+
+OTAssignmentHead:
+  num_prototypes: 20

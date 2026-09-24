@@ -1,0 +1,51 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho_assign.yml',
+]
+
+# Prototype-count ablation on the enlarged OrthoTracked_301_montages dataset:
+# identical to rtdetrv2_r50vd_ortho_assign.yml (5 prototypes) except for
+# num_prototypes (32 teeth x 20 = 640 prototype vectors).
+
+output_dir: ./output/rtdetrv2_r50vd_ortho_assign_p20
+
+# COCO-pretrained RT-DETRv2-R50 finetune. The assign chain (rtdetrv2_r50vd_ortho.yml)
+# does NOT set this, unlike the ortho_base / flip / orient ablation arms and the
+# PAX-Ray assign runs -- without it the decoder trains from scratch, which confounds
+# assign-vs-base. The loader skips the mismatched 4ch stem / anchor buffers.
+tuning: https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth
+
+wandb:
+  name: r50vd_ortho_pertooth_assign_p20_301
+  tags: [r50vd, ortho, per-tooth, 32cls, ot-assign, orientation, fdi_flip, res1024, proto20, ortho301]
+
+OTAssignmentHead:
+  num_prototypes: 20
+
+
+# ---- bs32 recipe (fills ~80% of an 80GB A100: 66.2GB peak at 1024 res) ----
+# The parent runs bs8. Going to bs32 cuts updates 4x (151 -> 37 iters/epoch,
+# 18,120 -> 4,440 total), which the next two blocks compensate for.
+train_dataloader:
+  total_batch_size: 32
+val_dataloader:
+  total_batch_size: 32
+
+# ema_decay 0.9999 is an averaging window of ~1/(1-decay) = 10,000 updates --
+# LONGER than the whole bs32 run, so the EMA would never leave the pretrained
+# init. Since val, best.pth selection and the final test eval all run on
+# ema.module (det_solver.py:84), that would wreck the metrics, not just slow
+# them. 0.9996 = ~2,500 updates, restoring the parent's ~66-epoch EMA horizon.
+ema:
+  decay: 0.9996
+
+# sqrt batch scaling (x2 for 4x batch): partially compensates for the 4x drop in
+# updates without the instability of linear x4 on a COCO-pretrained decoder.
+optimizer:
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00002
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0002

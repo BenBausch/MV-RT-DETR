@@ -1,0 +1,51 @@
+task: detection
+
+# Ultralytics YOLO11-L (COCO-pretrained yolo11l.pt, ~25M params) trained inside this
+# framework: same datasets / transforms / solver / EMA / per-tooth eval as RT-DETR,
+# only the detector differs. L tier ~= RT-DETRv2-R50.
+model: YOLO11
+criterion: YOLOCriterion
+postprocessor: DetNMSPostProcessor
+
+
+YOLO11:
+  cfg: yolo11l.yaml
+  weights: yolo11l.pt        # relative to the run cwd (rtdetrv2_pytorch/); auto-downloads if absent
+  in_channels: 3
+  num_candidates: 300        # top-k anchors handed to the OT head (= RT-DETR's 300 queries)
+
+
+# ultralytics' own loss and gains (cfg/default.yaml: box 7.5, cls 0.5, dfl 1.5)
+YOLOCriterion:
+  weight_dict: {loss_box: 7.5, loss_cls: 0.5, loss_dfl: 1.5}
+  losses: ['yolo']
+  reg_max: 16
+  strides: [8, 16, 32]
+  tal_topk: 10
+
+
+# ultralytics val's NMS: conf 0.001, IoU 0.7, max_det 300, class-aware
+DetNMSPostProcessor:
+  iou_threshold: 0.7
+  score_threshold: 0.001
+  keep_topk: 300
+  box_fmt: cxcywh
+  logit_fmt: sigmoid
+
+
+# Optimizer: what ultralytics itself picks for this run (optimizer=auto -> AdamW,
+# lr 0.002*5/(4+nc) = 2.8e-4 for 32 classes and < 10k iterations) -- uniform lr,
+# weight decay 5e-4 on conv weights only (none on BN / biases), grad clip 10.
+# Unlike RT-DETR there is no reduced backbone lr: the whole detector is pretrained.
+# lr 2e-4 is the bs32 value; run configs rescale it with their batch size.
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*det\.)(?=.*(?:\.bn\.|bias)).*$'
+      weight_decay: 0.
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.0005
+
+clip_max_norm: 10.0

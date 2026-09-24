@@ -1,0 +1,75 @@
+__include__: [
+  '../dataset/ortho_detection.yml',
+  '../runtime.yml',
+  '../rtdetrv2/include/dataloader.yml',
+  '../rtdetrv2/include/optimizer.yml',
+  './include/yolo11l.yml',
+]
+
+# YOLO11-L counterpart of configs/rtdetrv2/rtdetrv2_r50vd_ortho_base_bs32.yml
+# (OrthoTracked_301_montages, per-tooth 32 FDI classes). Same data, transforms,
+# resolution, epochs, LR schedule, warmup and EMA horizon (in epochs), and the same
+# hardware: ONE 80GB A100. Plain YOLO (NMS post-processing), no OT head, no flip, no
+# orientation channel.
+# Detector-specific: COCO-pretrained yolo11l.pt instead of the RT-DETR checkpoint,
+# and ultralytics' own loss + optimizer settings (see include/yolo11l.yml).
+#
+# bs24, not bs32: YOLO11-L at 1024 does not fit bs32 on one A100. Measured peak
+# (assign arm, AMP, full epoch + eval): bs20 58.9GB, bs24 70.6GB (87%), bs26 76.5GB
+# (94%), bs28 OOM. bs24 = 50 iters/epoch x 120 = 6,000 updates (RT-DETR bs32: 4,440).
+
+output_dir: ./output/yolo11l_ortho_base_bs24
+checkpoint_freq: 10
+
+use_wandb: True
+wandb:
+  project: rtdetr-ortho
+  name: yolo11l_ortho_base_bs24_301
+  mode: online
+  tags: [yolo11l, ortho, per-tooth, 32cls, base, no_flip, no_orientation, res1024, bs24, ortho301]
+
+
+epoches: 120
+
+lr_warmup_scheduler:
+  warmup_duration: 100
+ema:
+  warmups: 100
+  # (1 - decay) scaled with batch from the bs32 runs' 0.9996: 0.0004 * 24/32 = 0.0003
+  # -> ~3,333-update window = the same ~66-epoch EMA horizon as the RT-DETR bs32 arms
+  decay: 0.9997
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [100]
+  gamma: 0.1
+
+# sqrt batch scaling from the bs8 base lr 1e-4 (the rule the bs32 arms' 2e-4 follows):
+# 1e-4 * sqrt(24/8) = 1.732e-4, applied to the whole network (and the OT head)
+optimizer:
+  lr: 0.0001732
+
+
+train_dataloader:
+  total_batch_size: 24
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 110
+        ops: ['RandomPhotometricDistort']
+  collate_fn:
+    scales: ~
+
+val_dataloader:
+  total_batch_size: 32
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

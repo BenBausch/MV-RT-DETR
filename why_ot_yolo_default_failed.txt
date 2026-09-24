@@ -1,0 +1,47 @@
+he new YOLO11 + OT run is training on GPU 0, one GPU at batch size 24, using about 70.5 GB like before. It should finish in roughly 2.5 hours. The YOLO11 base run has meanwhile finished all 120 epochs, including its test eval.
+
+Did the OT head change?
+No. The OT head code, its loss and the postprocessor that turns its output into detections are all unchanged. Two things differ from the failed run:
+
+YOLO side: a new option in yolo11.py (candidate_nms_iou) runs NMS over YOLO's predictions before the 300 candidates are handed to the OT head. Overlapping boxes are removed regardless of class, in training and in inference. It's set to IoU 0.7 in the new config and is off by default, so old configs behave as before.
+Config: the orientation channel is removed (3-channel input), as you asked. The FDI flip stays.
+The new config is configs/yolo11/yolo11l_ortho_assign_p20_nms_no_orient_bs24.yml. It includes the original OT config and overrides only those two things. Because of the orientation change, this run no longer matches RT-DETR assign_p20 exactly, since that one uses the orientation channel.
+
+Why YOLO + OT failed
+1. The OT head needs roughly one candidate per object, and YOLO provides many.
+
+RT-DETR's decoder is trained with one-to-one matching: exactly one query per tooth is trained to fire, and the other queries learn to say "background". Its 300 queries therefore hold about one confident box per tooth plus low-scoring leftovers (about 6 per tooth, most of them weak).
+YOLO's loss (its task-aligned assigner) does the opposite. It trains about 10 anchors around every tooth to be confident, and NMS removes the duplicates afterwards.
+When I took YOLO's 300 highest-scoring anchors as candidates, each tooth came with about 17 near-identical boxes that had nearly the same score, position and features.
+2. The OT math spreads each tooth's probability over those duplicates. Sinkhorn produces an assignment matrix with two constraints:
+
+Each class (tooth) distributes one unit of probability over all candidates plus a "tooth absent" slot.
+Each candidate distributes one unit over the 32 classes plus a "drop this candidate" slot.
+With 17 indistinguishable candidates, the tooth's unit gets spread across them, roughly 1/17 each. Each duplicate then puts most of its own unit into its "drop" slot.
+
+3. The decoding rule throws those teeth away. The postprocessor keeps a (candidate, tooth) pair only if its probability beats both "drop" slots. In practice that means one candidate must hold about half the tooth's probability. When it is spread evenly, no candidate reaches that, and the tooth disappears, even though the head knew it was there. The measurements:
+
+The total probability on the right tooth stayed around 0.87 throughout training, so the head recognised the teeth.
+The best single candidate's share fell from a median of 0.94 (epoch 9) to 0.56 (epoch 39).
+Teeth with split probability rose from 5.6% to 27.7% (RT-DETR: 0.3%). Missed teeth went from 224 to 798.
+Val F1 fell from 0.851 at epoch 10 to 0.720 at epoch 39, with precision rising and recall collapsing.
+4. The training loss rewards spreading, which is why it got worse over time. The loss uses Hungarian matching to label exactly one candidate per tooth as correct and all others as "drop".
+
+Among 17 near-identical duplicates, which one wins the match depends on tiny box and score differences that change with every batch and augmentation. From the head's point of view, the correct one is effectively random.
+If the target is a random one of k identical candidates, the lowest expected loss is to give each about 1/k. The head learned exactly that.
+RT-DETR avoids this: its detector already marks one query per tooth as clearly best, and the head receives those scores as input, so ties are broken for it.
+YOLO's detector keeps all duplicates similarly confident, and the more it trains, the more alike they become.
+5. Secondary: the two losses fought over the detector. The OT loss backpropagates into YOLO's scores, boxes and features for the 300 candidates.
+
+For each tooth, it pushed about 16 of the 17 duplicates towards "drop". YOLO's own loss simultaneously pushed all of them to be confident.
+The result was a tug-of-war on the same outputs. The OT run's classification loss ended about 5× higher than the base run's (0.85 vs 0.16 at epoch 30).
+Its detector, scored on its own with plain NMS, reached 0.860 F1 at epoch 39. The base run had reached 0.892 by epoch 29.
+In RT-DETR both losses want one candidate per tooth, so they don't conflict.
+Part of this gap could come from the flip and orientation additions, which the base run doesn't have.
+Why the fix should help
+With NMS before selection, each tooth reaches the OT head as about 1–4 candidates instead of 17, so there is a well-defined candidate to assign.
+
+Tested on the failed run's epoch-39 weights, inference only, this raised val F1 from 0.720 to 0.880, with zero duplicate predictions.
+In training, the loss now has one clear target per tooth.
+The suppressed duplicates never reach the OT loss, so it no longer pushes them to "drop". YOLO's own loss can keep them confident without a fight.
+What the new run still has to show is whether the detector-damage part also goes away. I'll check that once it finishes, with the same diagnostics as before.

@@ -1,0 +1,41 @@
+__include__: [
+  './yolo11l_ortho_assign_p20_bs24.yml',
+]
+
+# Fixed YOLO11-L + OT run. Identical to yolo11l_ortho_assign_p20_bs24.yml (same OT head,
+# loss, postprocessor, bs24 recipe, FDI flip) except:
+#   - class-agnostic NMS (IoU 0.7) over YOLO's predictions before the top-300 OT
+#     candidates are picked (training and inference). Plain top-k handed the head ~17
+#     near-duplicate anchors per tooth; Sinkhorn split each tooth's mass across them and
+#     the dustbin dropped the tooth (val F1 fell 0.851 @ep10 -> 0.720 @ep39).
+#   - NO orientation-encoding channel (3-channel RGB input).
+
+output_dir: ./output/yolo11l_ortho_assign_p20_nms_no_orient_bs24
+
+wandb:
+  name: yolo11l_ortho_assign_p20_nms_no_orient_bs24_301
+  tags: [yolo11l, ortho, per-tooth, 32cls, ot-assign, cand_nms, no_orient, fdi_flip, res1024, proto20, bs24, ortho301]
+
+
+YOLO11:
+  in_channels: 3
+  candidate_nms_iou: 0.7
+
+
+train_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlipFDI, p: 0.5, num_classes: 32}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+
+val_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

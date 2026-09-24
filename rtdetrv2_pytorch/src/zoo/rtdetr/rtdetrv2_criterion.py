@@ -14,6 +14,58 @@ from ...misc.dist_utils import get_world_size, is_dist_available_and_initialized
 from ...core import register
 
 
+def assignment_nll(log_P, targets, indices):
+    """Supervise the OT assignment head (SuperGlue-style matching NLL).
+
+    `log_P` is the head's [B, N+1, C+1] `assignment_log`. Uses the Hungarian
+    `indices` already computed against the GT to know which query should carry
+    which class, then maximizes the log assignment at:
+      - matched cells   (query i, class c)            -> positive matches
+      - dustbin column  (unmatched query -> nothing)  -> dropped boxes
+      - dustbin row     (absent class -> no query)     -> missing teeth
+
+    The three terms are averaged separately and summed, so the many unmatched
+    queries (N >> C) do not swamp the few positive matches.
+    """
+    N, C = log_P.shape[1] - 1, log_P.shape[2] - 1
+    db_col, db_row = C, N                         # dustbin indices
+
+    pos_sum = log_P.new_zeros(())
+    negq_sum = log_P.new_zeros(())
+    negc_sum = log_P.new_zeros(())
+    n_pos = n_negq = n_negc = 0
+
+    for b, (src_idx, tgt_idx) in enumerate(indices):
+        lp = log_P[b]                             # [N+1, C+1]
+        matched_cls = targets[b]['labels'][tgt_idx].to(torch.int64)
+
+        # positive matches: query i should map to its GT class
+        if src_idx.numel() > 0:
+            pos_sum = pos_sum - lp[src_idx, matched_cls].sum()
+            n_pos += src_idx.numel()
+
+        # unmatched queries -> dustbin column
+        matched_mask = torch.zeros(N, dtype=torch.bool, device=lp.device)
+        matched_mask[src_idx] = True
+        unmatched_q = (~matched_mask).nonzero(as_tuple=True)[0]
+        if unmatched_q.numel() > 0:
+            negq_sum = negq_sum - lp[unmatched_q, db_col].sum()
+            n_negq += unmatched_q.numel()
+
+        # classes absent from this image -> dustbin row
+        present = torch.zeros(C, dtype=torch.bool, device=lp.device)
+        present[matched_cls] = True
+        absent_c = (~present).nonzero(as_tuple=True)[0]
+        if absent_c.numel() > 0:
+            negc_sum = negc_sum - lp[db_row, absent_c].sum()
+            n_negc += absent_c.numel()
+
+    loss = pos_sum / max(n_pos, 1) \
+        + negq_sum / max(n_negq, 1) \
+        + negc_sum / max(n_negc, 1)
+    return loss
+
+
 @register()
 class RTDETRCriterionv2(nn.Module):
     """ This class computes the loss for DETR.
@@ -116,56 +168,9 @@ class RTDETRCriterionv2(nn.Module):
         return losses
 
     def loss_assignment(self, outputs, targets, indices, num_boxes):
-        """Supervise the OT assignment head (SuperGlue-style matching NLL).
-
-        Uses the Hungarian `indices` already computed against the GT to know which
-        query should carry which class, then maximizes the log assignment at:
-          - matched cells   (query i, class c)            -> positive matches
-          - dustbin column  (unmatched query -> nothing)  -> dropped boxes
-          - dustbin row     (absent class -> no query)     -> missing teeth
-
-        The three terms are averaged separately and summed, so the many unmatched
-        queries (N >> C) do not swamp the few positive matches.
-        """
+        """Supervise the OT assignment head, see `assignment_nll`."""
         assert 'assignment_log' in outputs, 'model did not produce `assignment_log`'
-        log_P = outputs['assignment_log']             # [B, N+1, C+1]
-        N, C = log_P.shape[1] - 1, log_P.shape[2] - 1
-        db_col, db_row = C, N                         # dustbin indices
-
-        pos_sum = log_P.new_zeros(())
-        negq_sum = log_P.new_zeros(())
-        negc_sum = log_P.new_zeros(())
-        n_pos = n_negq = n_negc = 0
-
-        for b, (src_idx, tgt_idx) in enumerate(indices):
-            lp = log_P[b]                             # [N+1, C+1]
-            matched_cls = targets[b]['labels'][tgt_idx].to(torch.int64)
-
-            # positive matches: query i should map to its GT class
-            if src_idx.numel() > 0:
-                pos_sum = pos_sum - lp[src_idx, matched_cls].sum()
-                n_pos += src_idx.numel()
-
-            # unmatched queries -> dustbin column
-            matched_mask = torch.zeros(N, dtype=torch.bool, device=lp.device)
-            matched_mask[src_idx] = True
-            unmatched_q = (~matched_mask).nonzero(as_tuple=True)[0]
-            if unmatched_q.numel() > 0:
-                negq_sum = negq_sum - lp[unmatched_q, db_col].sum()
-                n_negq += unmatched_q.numel()
-
-            # classes absent from this image -> dustbin row
-            present = torch.zeros(C, dtype=torch.bool, device=lp.device)
-            present[matched_cls] = True
-            absent_c = (~present).nonzero(as_tuple=True)[0]
-            if absent_c.numel() > 0:
-                negc_sum = negc_sum - lp[db_row, absent_c].sum()
-                n_negc += absent_c.numel()
-
-        loss = pos_sum / max(n_pos, 1) \
-            + negq_sum / max(n_negq, 1) \
-            + negc_sum / max(n_negc, 1)
-        return {'loss_assignment': loss}
+        return {'loss_assignment': assignment_nll(outputs['assignment_log'], targets, indices)}
 
     def loss_proto_div(self, outputs, targets, indices, num_boxes):
         """Surface the assignment head's prototype anti-collapse penalty.

@@ -1,0 +1,87 @@
+__include__: [
+  './yolo11l_ortho_base_bs24.yml',
+]
+
+# YOLO11-L counterpart of configs/rtdetrv2/rtdetrv2_r50vd_ortho_assign_p20.yml.
+# Adds the same bundle on top of the YOLO base arm:
+#   - OTAssignmentHead with 20 prototypes (identical settings), fed the top-300
+#     YOLO anchors instead of RT-DETR's 300 decoder queries
+#   - loss_assignment / loss_proto_div (same weights)
+#   - RTDETRAssignmentPostProcessor (one box per class, dustbin) replacing NMS
+#   - FDI-aware horizontal flip + orientation-encoding 4th input channel
+# Batch size (24, one A100), EMA and LR come from the base arm (see its header).
+
+output_dir: ./output/yolo11l_ortho_assign_p20_bs24
+
+wandb:
+  name: yolo11l_ortho_assign_p20_bs24_301
+  tags: [yolo11l, ortho, per-tooth, 32cls, ot-assign, orientation, fdi_flip, res1024, proto20, bs24, ortho301]
+
+
+YOLO11:
+  in_channels: 4             # RGB + orientation channel (extra stem channel zero-init)
+  assignment_head: OTAssignmentHead
+
+OTAssignmentHead:
+  hidden_dim: 320            # YOLO11-L candidate embedding: 256 (class branch) + 64 (box branch)
+  dim: 256
+  num_layers: 3
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  sinkhorn_iters: 50
+  use_box_pos: True
+  use_pos_proto: True
+  num_prototypes: 20
+  proto_repulsion: 0.1
+  proto_margin: 0.5
+
+postprocessor: RTDETRAssignmentPostProcessor
+RTDETRAssignmentPostProcessor:
+  use_hungarian: True
+  use_dustbin: True
+  score_threshold: 0.0
+  match_threshold: 0.0
+
+# the OT head gets the RT-DETR p20 run's weight decay (1e-4) and the base lr;
+# the detector keeps its ultralytics settings from include/yolo11l.yml
+optimizer:
+  params:
+    -
+      params: '^(?=.*det\.)(?=.*(?:\.bn\.|bias)).*$'
+      weight_decay: 0.
+    -
+      params: '^(?=.*assignment_head).*$'
+      weight_decay: 0.0001
+
+# same matcher as the RT-DETR runs pairs GT with the candidates for the OT loss
+use_focal_loss: True
+YOLOCriterion:
+  weight_dict: {loss_box: 7.5, loss_cls: 0.5, loss_dfl: 1.5, loss_assignment: 2, loss_proto_div: 1}
+  losses: ['yolo', 'assignment', 'proto_div']
+  matcher:
+    type: HungarianMatcher
+    weight_dict: {cost_class: 2, cost_bbox: 5, cost_giou: 2}
+    alpha: 0.25
+    gamma: 2.0
+
+
+train_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlipFDI, p: 0.5, num_classes: 32}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+        - {type: OrientationChannel, enabled: True}
+
+val_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: OrientationChannel, enabled: True}

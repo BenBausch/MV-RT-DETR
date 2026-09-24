@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import os
 import PIL.Image as Image
@@ -66,5 +67,11 @@ def prepare_dataset(path_do_dataset):
 
 
 if __name__ == "__main__":
-    path = "/mnt/data/abi/datasets/Orthodontics/Lux/Annotated/Seg_only/OrthoTracked_156_subjects"
-    prepare_dataset(path)
+    ap = argparse.ArgumentParser(
+        description="Write YOLO bbox .txt labels next to every <VIEW>_fdi.png mask. "
+        "Expects --root to contain one subdirectory per subject, each holding "
+        "one subdirectory per session with that session's view images."
+    )
+    ap.add_argument("--root", required=True)
+    args = ap.parse_args()
+    prepare_dataset(args.root)

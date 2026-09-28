@@ -41,12 +41,17 @@ def match_image(
                      localizes it (IoU >= iou_thr) -- a real wrong-label error
       missed       : nothing localizes the tooth (no box at IoU >= iou_thr, no
                      same-class overlap) -- a detection / threshold failure
+
+    Box IoU per present tooth: its best IoU with a same-class prediction. A tooth
+    with no overlapping same-class prediction (misclassified or missed) has no
+    associated box; it is returned with IoU 0 and flagged unassociated.
     """
     keep = pred_scores >= score_thr
     pl, ps, pb = pred_labels[keep], pred_scores[keep], pred_boxes[keep]
     tp, fp, fn = defaultdict(int), defaultdict(int), defaultdict(int)
     correct, misloc = defaultdict(int), defaultdict(int)
     misclassified, missed = defaultdict(int), defaultdict(int)
+    box_ious = defaultdict(list)  # class -> [(iou, associated)] per present tooth
 
     matched_gt = np.zeros(len(gt_labels), dtype=bool)
     iou = None
@@ -88,6 +93,7 @@ def match_image(
             best_other = float(iou[other, gi].max()) if other.size else 0.0
         else:
             best_same = best_other = 0.0
+        box_ious[cg].append((best_same, best_same > 0.0))
         if best_same >= iou_thr:
             correct[cg] += 1
         elif best_same > 0.0:
@@ -96,16 +102,30 @@ def match_image(
             misclassified[cg] += 1
         else:
             missed[cg] += 1
-    return tp, fp, fn, pl, correct, misloc, misclassified, missed
+    return tp, fp, fn, pl, correct, misloc, misclassified, missed, box_ious
+
+
+def iou_summary(pairs):
+    """Mean box IoU over present teeth: over associated teeth only, and over all
+    teeth with the unassociated (missed) ones counted as IoU 0."""
+    ious = np.array([i for i, _ in pairs], dtype=float)
+    assoc = np.array([a for _, a in pairs], dtype=bool)
+    return dict(
+        iou_n_assoc=int(assoc.sum()),
+        iou_n_missed=int((~assoc).sum()),
+        mean_iou_assoc=float(ious[assoc].mean()) if assoc.any() else 0.0,
+        mean_iou_all=float(ious.mean()) if len(ious) else 0.0,
+    )
 
 
 def compute_metrics(records, score_thr, iou_thr):
     TP, FP, FN, DUP = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
     CORRECT, MISLOC = defaultdict(int), defaultdict(int)
     MISCLS, MISSED = defaultdict(int), defaultdict(int)
+    IOUS = defaultdict(list)
     imgs_with_dup, total_dups, n_imgs = 0, 0, len(records)
     for rec in records:
-        tp, fp, fn, kept, correct, misloc, miscls, missed = match_image(
+        tp, fp, fn, kept, correct, misloc, miscls, missed, box_ious = match_image(
             rec["pred_labels"],
             rec["pred_scores"],
             rec["pred_boxes"],
@@ -128,6 +148,8 @@ def compute_metrics(records, score_thr, iou_thr):
             MISCLS[c] += v
         for c, v in missed.items():
             MISSED[c] += v
+        for c, v in box_ious.items():
+            IOUS[c].extend(v)
         counts = np.bincount(kept) if len(kept) else np.array([])
         dup = int((counts[counts > 1] - 1).sum()) if counts.size else 0
         total_dups += dup
@@ -146,6 +168,7 @@ def compute_metrics(records, score_thr, iou_thr):
         per_class[c] = dict(
             tp=tp, fp=fp, fn=fn, p=p, r=r, f1=f1, support=sup, dup=DUP[c],
             correct=CORRECT[c], misloc=MISLOC[c], miscls=MISCLS[c], missed=MISSED[c],
+            **iou_summary(IOUS[c]),
         )
         f1s.append(f1)
         ps.append(p)
@@ -182,6 +205,7 @@ def compute_metrics(records, score_thr, iou_thr):
         misloc=sum(MISLOC.values()),
         miscls=sum(MISCLS.values()),
         missed=sum(MISSED.values()),
+        **iou_summary([p for v in IOUS.values() for p in v]),
         imgs_with_dup=imgs_with_dup,
         total_dups=total_dups,
         n_imgs=n_imgs,

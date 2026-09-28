@@ -196,6 +196,9 @@ def main(args):
                 miscls=m["miscls"], missed=m["missed"],
                 imgs_with_dup=m["imgs_with_dup"], n_imgs=m["n_imgs"],
                 dup_img_pct=round(dup_pct, 1), total_dups=m["total_dups"],
+                mean_iou_assoc=round(m["mean_iou_assoc"], 4),
+                mean_iou_all=round(m["mean_iou_all"], 4),
+                iou_n_assoc=m["iou_n_assoc"], iou_n_missed=m["iou_n_missed"],
             ))
 
         # recall-loss decomposition: where do the missed teeth go?
@@ -210,6 +213,14 @@ def main(args):
                 for k in ("correct", "misloc", "miscls", "missed")
             ]
             print(f"  {tag:<34}" + "".join(f"{c:>14}" for c in cells))
+
+        # box IoU: each present tooth vs its best same-class prediction; a tooth
+        # with no overlapping same-class prediction is missed and scores IoU 0
+        print("\n  box IoU (tooth vs its best same-class prediction; missed = no overlapping same-class box):")
+        print(f"  {'run':<34}{'mIoU assoc':>12}{'mIoU all':>12}{'assoc':>8}{'missed':>8}")
+        for tag, m in summaries.items():
+            print(f"  {tag:<34}{m['mean_iou_assoc']:>12.3f}{m['mean_iou_all']:>12.3f}"
+                  f"{m['iou_n_assoc']:>8}{m['iou_n_missed']:>8}")
 
         if args.per_class:
             for tag, m in summaries.items():
@@ -238,6 +249,9 @@ def main(args):
                         dup=d["dup"], correct=d["correct"], misloc=d["misloc"],
                         miscls=d["miscls"], missed=d["missed"], precision=round(d["p"], 4),
                         recall=round(d["r"], 4), f1=round(d["f1"], 4),
+                        mean_iou_assoc=round(d["mean_iou_assoc"], 4),
+                        mean_iou_all=round(d["mean_iou_all"], 4),
+                        iou_n_assoc=d["iou_n_assoc"], iou_n_missed=d["iou_n_missed"],
                     ))
 
         if args.plot:

@@ -210,7 +210,10 @@ class OrientationChannel(T.Transform):
 
         h, w = image.shape[-2], image.shape[-1]
         img_id = int(target['image_id'].flatten()[0])
-        x0 = x0_from_filename(dataset.coco.loadImgs(img_id)[0]['file_name'])
+        img_info = dataset.coco.loadImgs(img_id)[0]
+        # datasets that know the effective zero crossing (IOP-Compass, whose buccal
+        # views may or may not be mirrored on load) store it on the image record
+        x0 = img_info['x0'] if 'x0' in img_info else x0_from_filename(img_info['file_name'])
 
         # On flip, mirror the zero-position (x0 -> 1-x0) so a flipped LEFT view
         # becomes identical to a native RIGHT view (and vice-versa); CENTER/UP/DOWN

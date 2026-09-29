@@ -11,5 +11,6 @@ from .coco_dataset import (
 from .coco_eval import CocoEvaluator
 from .coco_utils import get_coco_api_from_dataset
 from .ortho_dataset import OrthoDetection
+from .iop_dataset import IOPCompassDetection
 from .paxray_dataset import PaxrayDetection
 from .spine_dataset import SpineDetection

@@ -1,0 +1,20 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho_assign_p20.yml',
+  '../dataset/iop_detection.yml',
+]
+
+# The ortho assign-p20 model (R50 + OT assignment head, 20 prototypes, 1024 res,
+# FDI flip, orientation channel) on IOP-Compass instead of OrthoTracked.
+#
+# Train from scratch on IOP:
+#   python tools/scripts/train.py -c configs/rtdetrv2/rtdetrv2_r50vd_iop_assign_p20.yml
+# Evaluate an OrthoTracked-trained checkpoint zero-shot on the IOP test split:
+#   python tools/scripts/eval.py -c configs/rtdetrv2/rtdetrv2_r50vd_iop_assign_p20.yml \
+#       -r output/rtdetrv2_r50vd_ortho_assign_p20/best.pth \
+#       -u val_dataloader.dataset.split_file=/Users/ben.bausch/Documents/Datasets/IOP-Compass/test.txt
+
+output_dir: ./output/rtdetrv2_r50vd_iop_assign_p20
+
+wandb:
+  name: r50vd_iop_pertooth_assign_p20
+  tags: [r50vd, iop-compass, per-tooth, 32cls, ot-assign, orientation, fdi_flip, res1024, proto20]

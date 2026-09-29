@@ -7,6 +7,7 @@ A horizontal flip is a left<->right mirror, so when it fires:
   - the FDI tooth labels must swap across the midline: quadrant 1<->2 and 3<->4.
 """
 import os
+import re
 
 # view id assignment (stable order)
 VIEW_NAMES = ["CENTER", "DOWN", "LEFT", "RIGHT", "UP"]
@@ -20,8 +21,27 @@ VIEW_X0 = {"CENTER": 0.5, "UP": 0.5, "DOWN": 0.5, "LEFT": 0.25, "RIGHT": 0.75}
 VIEW_X0_BY_ID = [VIEW_X0[n] for n in VIEW_NAMES]
 
 
+# IOP-Compass names its images IOP_<View>_<n>.png; its view tokens map onto ours
+# by anatomy (Left = patient-left buccal, like LEFT). Its buccal photos are stored
+# un-mirrored, so the x0 above only holds once IOPCompassDetection has mirrored
+# them (mirror_buccal=True, the default); the dataset stores the effective x0 per
+# image, which OrientationChannel prefers over the filename lookup.
+IOP_VIEW_TO_NAME = {"Center": "CENTER", "Upper": "UP", "Down": "DOWN",
+                    "Left": "LEFT", "Right": "RIGHT"}
+_IOP_NAME_RE = re.compile(r"^IOP_(Center|Upper|Down|Left|Right)_")
+
+
+def iop_view_token(file_name: str):
+    """'Patient_7/IOP_Left_7.png' -> 'Left'. None if not an IOP-Compass name."""
+    m = _IOP_NAME_RE.match(os.path.basename(file_name))
+    return m.group(1) if m else None
+
+
 def view_id_from_filename(file_name: str) -> int:
-    """'.../07.04.2016/CENTER.png' -> VIEW_TO_ID['CENTER']. -1 if unknown."""
+    """'.../07.04.2016/CENTER.png' or '.../IOP_Center_7.png' -> VIEW_TO_ID['CENTER']. -1 if unknown."""
+    token = iop_view_token(file_name)
+    if token is not None:
+        return VIEW_TO_ID[IOP_VIEW_TO_NAME[token]]
     stem = os.path.splitext(os.path.basename(file_name))[0].upper()
     return VIEW_TO_ID.get(stem, -1)
 

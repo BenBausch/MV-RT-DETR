@@ -1,0 +1,17 @@
+__include__: [
+  './rtdetrv2_r50vd_ortho_base_bs32.yml',
+  '../dataset/iop_detection.yml',
+]
+
+# Baseline arm for the IOP-Compass comparison against rtdetrv2_r50vd_iop_assign_p20.yml:
+# the ortho base_bs32 model (R50, no OT assignment head, no FDI flip, no orientation
+# channel, COCO-pretrained finetune, 1024 res, bs32, 120 epochs) on IOP-Compass
+# instead of OrthoTracked.
+#
+#   python tools/scripts/train.py -c configs/rtdetrv2/rtdetrv2_r50vd_iop_base_bs32.yml
+
+output_dir: ./output/rtdetrv2_r50vd_iop_base_bs32
+
+wandb:
+  name: r50vd_iop_base_bs32
+  tags: [r50vd, iop-compass, per-tooth, 32cls, base, no_flip, no_orientation, res1024, bs32]

@@ -11,7 +11,7 @@ __include__: [
 # Evaluate an OrthoTracked-trained checkpoint zero-shot on the IOP test split:
 #   python tools/scripts/eval.py -c configs/rtdetrv2/rtdetrv2_r50vd_iop_assign_p20.yml \
 #       -r output/rtdetrv2_r50vd_ortho_assign_p20/best.pth \
-#       -u val_dataloader.dataset.split_file=/Users/ben.bausch/Documents/Datasets/IOP-Compass/test.txt
+#       -u val_dataloader.dataset.split_file=/mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/splits/test.txt
 
 output_dir: ./output/rtdetrv2_r50vd_iop_assign_p20
 

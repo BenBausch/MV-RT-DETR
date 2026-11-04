@@ -1,0 +1,15 @@
+__include__: [
+  './yolo11l_ortho_assign_p20_bs24.yml',
+  '../dataset/iop_detection.yml',
+]
+
+# YOLO11-L + OT assignment head (20 prototypes, FDI flip, orientation channel, bs24
+# on one A100) on IOP-Compass instead of OrthoTracked. Counterpart of
+# configs/rtdetrv2/rtdetrv2_r50vd_iop_assign_p20.yml; recipe unchanged from the ortho
+# arm (see yolo11l_ortho_assign_p20_bs24.yml).
+
+output_dir: ./output/yolo11l_iop_assign_p20_bs24
+
+wandb:
+  name: yolo11l_iop_assign_p20_bs24
+  tags: [yolo11l, iop-compass, per-tooth, 32cls, ot-assign, orientation, fdi_flip, res1024, proto20, bs24]

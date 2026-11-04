@@ -1,0 +1,15 @@
+__include__: [
+  './yolo11l_ortho_assign_p20_nms_no_orient_bs24.yml',
+  '../dataset/iop_detection.yml',
+]
+
+# Fixed YOLO11-L + OT run (class-agnostic candidate NMS at IoU 0.7 before the top-300
+# OT candidates, no orientation channel, FDI flip, 20 prototypes, bs24 on one A100) on
+# IOP-Compass instead of OrthoTracked. Replaces yolo11l_iop_assign_p20_bs24.yml, which
+# reproduced the mass-splitting recall collapse (val recall 0.878 @ep2 -> 0.839 @ep6).
+
+output_dir: ./output/yolo11l_iop_assign_p20_nms_no_orient_bs24
+
+wandb:
+  name: yolo11l_iop_assign_p20_nms_no_orient_bs24
+  tags: [yolo11l, iop-compass, per-tooth, 32cls, ot-assign, cand_nms, no_orient, fdi_flip, res1024, proto20, bs24]

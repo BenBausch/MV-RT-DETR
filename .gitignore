@@ -178,3 +178,6 @@ rtdetrv2_pytorch/dataset/
 
 tmp
 tmp/*
+
+archive
+archvie/*

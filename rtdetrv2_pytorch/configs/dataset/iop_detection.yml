@@ -5,7 +5,7 @@
 # its data for IOP-Compass. It deliberately sets no `transforms`, so the model
 # config's pipeline (Resize / OrientationChannel / flip ...) is kept as-is.
 #
-# Split files come from tools/dataset/make_iop_splits.py (official patient-level
+# Split files come from tools/dataset/iop_compass/create_splits.py (official patient-level
 # 700/200/100 split, seed 42). det_solver's test eval picks up test.txt next to
 # val.txt automatically.
 
@@ -16,13 +16,16 @@ per_tooth_eval:
 # Same 32-class FDI order as OrthoTracked (0-7: 11..18 ... 24-31: 41..48).
 num_classes: 32
 
-_iop_root: &iop_root /Users/ben.bausch/Documents/Datasets/IOP-Compass
+# Pre-resized copy (long side 1024, aspect kept, annotations rescaled) made by
+# tools/dataset/iop_compass/resize_dataset.py: the release PNGs (up to 6016x4016)
+# take ~0.3 s each to decode, which made training data-loader bound.
+_iop_root: &iop_root /mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/IOP-Compass_1024
 
 train_dataloader:
   dataset:
     type: IOPCompassDetection
     img_folder: *iop_root
-    split_file: /Users/ben.bausch/Documents/Datasets/IOP-Compass/train.txt
+    split_file: /mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/splits/train.txt
     # IOP stores Left/Right buccal photos un-mirrored; OrthoTracked stores them
     # mirrored. True flips them on load to the OrthoTracked convention (FDI labels
     # unchanged), which is what an OrthoTracked-trained model expects.
@@ -32,5 +35,5 @@ val_dataloader:
   dataset:
     type: IOPCompassDetection
     img_folder: *iop_root
-    split_file: /Users/ben.bausch/Documents/Datasets/IOP-Compass/val.txt
+    split_file: /mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/splits/val.txt
     mirror_buccal: True

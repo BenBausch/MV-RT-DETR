@@ -3,8 +3,8 @@ dataset:
   name: final_1000
   # MV-RT-DETR: local paths; the released download names images without the
   # _RawImage infix (upstream: 'IOP_{view_token}_RawImage_{pid}.png').
-  root: /Users/ben.bausch/Documents/Datasets/IOP-Compass
-  derived_root: /Users/ben.bausch/Documents/Datasets/IOP-Compass/derived/final_1000
+  root: /mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/IOP-Compass
+  derived_root: /mnt/data/abi/datasets/Orthodontics/Public_Datasets/IOP-Compass/splits/derived/final_1000
 
   patient_dir_regex: '^Patient_(?P<pid>\d+)$'
   image_pattern: 'IOP_{view_token}_{pid}.png'

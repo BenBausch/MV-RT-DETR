@@ -1,0 +1,15 @@
+__include__: [
+  './yolo11l_ortho_base_bs24.yml',
+  '../dataset/iop_detection.yml',
+]
+
+# YOLO11-L base arm (NMS, no OT head, no flip, no orientation channel, bs24 on one
+# A100) on IOP-Compass instead of OrthoTracked. Counterpart of
+# configs/rtdetrv2/rtdetrv2_r50vd_iop_base_bs32.yml; recipe unchanged from the ortho
+# arm (see yolo11l_ortho_base_bs24.yml).
+
+output_dir: ./output/yolo11l_iop_base_bs24
+
+wandb:
+  name: yolo11l_iop_base_bs24
+  tags: [yolo11l, iop-compass, per-tooth, 32cls, base, no_flip, no_orientation, res1024, bs24]

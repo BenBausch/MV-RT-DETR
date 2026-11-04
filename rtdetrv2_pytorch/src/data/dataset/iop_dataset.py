@@ -16,7 +16,7 @@ On-disk layout::
     <root>/Patient_<n>/IOP_<View>_<n>.json    {"teeth": [{"FDI_NUM", "x_min", ..., "contours"}]}
 
 Split files (``train.txt``/``val.txt``/``test.txt``, one image path per line,
-relative to ``img_folder``) are written by ``tools/dataset/make_iop_splits.py``,
+relative to ``img_folder``) are written by ``tools/dataset/iop_compass/create_splits.py``,
 which reproduces the official patient-level 700/200/100 split.
 
 Buccal-view convention: IOP-Compass stores the Left/Right buccal photos as direct
